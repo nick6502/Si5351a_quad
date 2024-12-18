@@ -1,4 +1,6 @@
 
+// V1.18, December 12, 2024
+
 
 /*
 	August 8, 2023 - starting modifications for V1.12. The following user
@@ -182,6 +184,19 @@
   Requested by Matt (Mateusz), SQ3MB. It will be an option, to be 
   compiled if RELAY_CONTROL is defined.
 
+  V1.16, I have freq info going to the SI5351a every time through the loop
+  for T/R reasons. Should only update when the key line changes state. I fixed
+  that. Problem noted by Mateusz SQ3MB 
+
+  V1.17, more for the above problem. I needed to include a couple more statements
+  in the area that just executes when the key has gone open (key up). I also 
+  added a statement to the Verbose startup report saying PCF8575: YES, when 
+  the compile flag for that has been defined. 12/10/2024
+  
+  V1.18, add a band map (boolean bandInclude[11]) for locking out certain bands 
+  from the band selection menu so user can customize what bands are shown 
+  when he turns the dial. 12/11/2024
+
 /*
 
 
@@ -242,7 +257,7 @@ Adafruit_PCF8575 pcf;
 #define spkrpin 9     // Pin for audio to speaker for beep
 #define SW1 12		  // Pin for pushbutton PB1
 #define SW2 11        // Pin for pushbutton PB2
-#define TX_MODE 8 // Pin to monitor for key_down status
+#define TX_MODE 8 // Pin to monitor for key_down status. Reads LOW when key is down
 #define TX_Out 10 // Echoes TX_MODE but changes *after* registers sent to chip
 #define SB_Relay A2 // Sideband select. HIGH in LSB, LOW in USB
 
@@ -485,10 +500,20 @@ void Set_Freq(uint32_t frequency);
                         18078000, 21025000, 24910000, 28025000, 50125000,
                         146520000};
 						
-    uint8_t hamBand_index = 2; // start on 40 meters
+    signed char hamBand_index = 2; // start on 40 meters V1.18 change to signed so can test for < 0
 	uint8_t	Menu_item; // pointer to currently selected menu entry
   uint8_t Menu_itemA; // V1.14
 
+// V1.18 below, create a band map to show which bands will show in the menu
+// selection.  Note that 'true' means DO include the band and 'false' means
+// do not include it.
+
+// USERS: To remove any band from the menu selection list, change the 'true' to 'false'
+// for that entry. See the above "Bands[]" array for the sequence.
+
+
+	boolean bandInclude[11] = {true, false, true, true, true, true, true, true, 
+	                           true, true, false};
 // V1.15
 
 
@@ -744,7 +769,7 @@ else
 	lcd.setCursor(0,LCDBottomLine);
 	lcd.print(" Si5351a Quad"); // display version number on the LCD
 	lcd.setCursor(0,LCDTopLine);
-	lcd.print(" WA5BDU V1.15"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
+	lcd.print(" WA5BDU V1.18"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
 	                           // V1.7 4/28/2022 V1.8 1/12/2023 V1.9 1/24/2023
                              // V1.10 4/16/2023
 							 // V1.11 8/4/2023
@@ -752,6 +777,10 @@ else
 							 // V1.13 9/19/2023
                // V1.14 12/9/2023
                // V1.15 11/8/2024
+               // V1.16 12/4/2024
+               // V1.17 12/10/2024
+               // V1.18 12/12/2024
+
 	delay(2500);
 	lcd.clear();
 	
@@ -1044,10 +1073,15 @@ uint16_t loopCounter; // for testing/timing main loop
 
 	
 // Now check for key down condition
+// In V1.16, I make sure that the "key up" actions only occur the one time
+// that the keyed line has returned to open
 
-		if(!digitalRead(TX_MODE))
-		{
-			key_down = true; 
+
+  if(!digitalRead(TX_MODE))
+  {
+    key_down = true;
+
+			// key_down = true; // V1.16
 			digitalWrite(LEDPIN, HIGH);
 			send_regs_TX(); // change output frequency 
 			digitalWrite(TX_Out, LOW); // echo keyed line AFTER registers updated
@@ -1064,8 +1098,8 @@ uint16_t loopCounter; // for testing/timing main loop
 			}
 			if(TX_CLK2) clock_2_ON(); // V1.12
 			
-			while(!digitalRead(TX_MODE)); // stay here until key up
-		}
+			while(!digitalRead(TX_MODE)); // stay here until key returns to up
+		
 // Below actions take place after key goes back UP
 			
 			key_down = false; // V1.4
@@ -1074,6 +1108,7 @@ uint16_t loopCounter; // for testing/timing main loop
 			send_regs_RX(); // change output frequency 
 			noTone(spkrpin); // turn off sidetone
 			
+  // } // V1.16 move brace to V1.17 marker below ...
 
 			if(TX_CLK2) si5351aOutputOff(SI_CLK2_CONTROL); // V1.12 turn clock 2 off
 			
@@ -1086,7 +1121,9 @@ uint16_t loopCounter; // for testing/timing main loop
 				clock_0_ON();
 				if(QUAD) clock_1_ON();
 			}
-			
+
+  } // V1.17 above two actions should only happen when key goes up
+
 // V1.12 - I'm not sure I like the idea of contact bounce delay, 
 // but I moved it to the end of the routine so it wouldn't delay 
 // actions. Users who do not use mechanical keys may want to change 
@@ -1604,13 +1641,21 @@ void showChoiceA()
 		r_dir = low_rez();	
 		if (r_dir == 1)
 			{
-			hamBand_index++; // currently, 0 thru 10 are valid
-			if (hamBand_index > 10) hamBand_index = 0; // V1.6 10 was 11
+				// V1.18 - keep incrementing until we hit a band that's not locked out.
+				do 
+				{
+				hamBand_index++; //V1.18
+				if(hamBand_index > 10) hamBand_index = 0; // V1.18 roll over to zero
+				} while(!bandInclude[hamBand_index]); // V1.18 if band is false, increment again
 			}
 			else if(r_dir == 2)
 			{
-				if(hamBand_index == 0) hamBand_index = 11; // v1.6, 11 was 12
-				hamBand_index--;
+				// V1.18 - keep decrementing until we hit a band that's not locked out.
+				do 
+				{
+				hamBand_index--; // V1.18
+				if(hamBand_index < 0) hamBand_index = 10; // V1.18 roll under to top
+				} while(!bandInclude[hamBand_index]); // V1.18 if band is false, decrement again
 			}
 			
     		if (r_dir) showBand();
@@ -1644,7 +1689,6 @@ void showChoiceA()
 // V1.15, if PCF8575 is in use, set the output lines to match the band
 // *bk4
 #ifdef RELAY_CONTROL
-
   Select_Relay(hamBand_index);
   #endif 
   }
@@ -1772,6 +1816,9 @@ void showChoiceA()
 			else lcd.print("N");
 		
     delay(2000);
+    #ifdef RELAY_CONTROL // V1.17 add this status to verbose mode
+    lcd.print("PCF8575: YES");
+    #endif
     }
 
 	if(X4)
