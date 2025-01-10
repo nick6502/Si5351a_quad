@@ -76,7 +76,7 @@ precede each line to potentially be edited.
 
 // USERS: COMMENT OUT OR DELETE LINE BELOW IF PCF8575 RELAY SELECTION IS NOT USED
 
-#define RELAY_CONTROL // When defined, do compile the PCF8575 code V1.15
+// #define RELAY_CONTROL // When defined, do compile the PCF8575 code V1.15
 
 #ifdef RELAY_CONTROL
 

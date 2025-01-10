@@ -12,7 +12,7 @@
 	* Ability to turn off the quadrature output if it's not desired or needed.
 	  When this is done, there's no output from Clock 1
 	  
-	* Add and I.F. offset for superhet receivers. The specified offset is added
+	* Add an I.F. offset for superhet receivers. The specified offset is added
 	  to the displayed receive frequency
 	  
 	* Add an output from Clock 2 which provides the transmit frequency for a
@@ -197,23 +197,13 @@
   from the band selection menu so user can customize what bands are shown 
   when he turns the dial. 12/11/2024
 
-/*
+ V1.19, I realized I may want to use this VFO to drive a transmitter only, for
+ instance my EICO 720. In such a case, I don't want ANY outputs in the Key Up
+ state as they might QRM my separate receiver. So here comes TX_ONLY as a
+ true or false option. 
 
-
-	Note: The genesis of this source code starts with my Si570 code as a 
-	"single frequency" controller. This changed when I incorporated CW offset
-	for pitch plus RIT, requiring separate TX and RX frequency variables.
-	Next I began adapting that stuff to my Si5351a code, which already had its
-	own names for certain variables and its own way of doing certain things.
-	So I think in the executable code I've gotten things straightened out, but
-	many of the comments may have outdated names, etc.  Sorry about that.
-	Also, the code may have some redundant stuff, where a routine may take a
-	"frequency" argument generically, but it turns out that the argument can
-	only be FoutRX or FoutTX in this context.
 	
-*/
-	
-
+*/ 
 
 //       ************ What is PIND? *****************
 //
@@ -293,6 +283,7 @@ Adafruit_PCF8575 pcf;
   #define EE_TRIM EE_CLK0_1_OFF_KYDN + 1 // V1.13, boolean
   #define EE_DIV_FACTOR EE_TRIM + 1 // V1.13, uint8_t
   #define EE_X4 EE_DIV_FACTOR + 1 // V1.13 boolean
+  #define EE_TX_ONLY EE_X4 + 1 // V1.19 boolean
 
 
 
@@ -357,6 +348,7 @@ Adafruit_PCF8575 pcf;
 void si5351aOutputOff(uint8_t clk);
 void Set_Freq(uint32_t frequency);
 
+
 #endif //SI5351A_H
 
 // NRK add some definitions for LCD pins
@@ -405,6 +397,8 @@ void Set_Freq(uint32_t frequency);
   bool CLK0_1_OFF_KYDN = false; // V1.13 don't turn off CLKs 0 & 1 on key down
   bool TRIM = true; // V1.13 do zero less significant digits on larger step
   uint8_t DIV_FACTOR = 1; // V1.13 encoder pulses per count. 
+  bool TX_ONLY = false; // V1.19, output only on key down, from CLK0, plus 1 if quadrature
+  bool SPOT = false; // V1.19 toggled by PB1. When true, output is ON in key up state
 
   uint8_t EE_flagValue = 255; // V1.13, will be 170 after EEPROM written
 
@@ -412,9 +406,12 @@ void Set_Freq(uint32_t frequency);
  
 	void RotaryISR(); // V1.8 - declaration
 	bool GetButtons(); // "" 
-   	void instructions();
+  void instructions();
+  void doPitch();
+  void doCWPhone();
+  void showSidetone();
 
-    uint32_t FoutRX; // Desired output frequency V1.1, have RX and TX
+  uint32_t FoutRX; // Desired output frequency V1.1, have RX and TX
 	uint32_t FoutTX; 
 	uint32_t RITSave; // Store FoutRX here when turning RIT off, so can restore
 	void menu();
@@ -435,7 +432,9 @@ void Set_Freq(uint32_t frequency);
 	void clock_1_ON();
 	void clock_2_ON();
   void clock_2_OFF(); // V1.14
-  
+  void clock_0_OFF(); // V1.19
+  void clock_1_OFF(); // V1.19 
+  void spot_it(); // V1.19
 	void step_up();
 	void step_down();
 	void stepSize_up();
@@ -561,6 +560,7 @@ void Set_Freq(uint32_t frequency);
 // switching, offset (pitch) and RIT.
 
   uint16_t CW_pitch = 480; 
+  uint16_t CW_pitch_ST = 480;  
   boolean modeCW = true; // true means do frequency display correction for offset
   boolean sidetone = true; // generate sidetone when key down
   boolean key_down = false; // flag key down state (key down = true)
@@ -769,7 +769,7 @@ else
 	lcd.setCursor(0,LCDBottomLine);
 	lcd.print(" Si5351a Quad"); // display version number on the LCD
 	lcd.setCursor(0,LCDTopLine);
-	lcd.print(" WA5BDU V1.18"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
+	lcd.print(" WA5BDU V1.19"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
 	                           // V1.7 4/28/2022 V1.8 1/12/2023 V1.9 1/24/2023
                              // V1.10 4/16/2023
 							 // V1.11 8/4/2023
@@ -780,6 +780,7 @@ else
                // V1.16 12/4/2024
                // V1.17 12/10/2024
                // V1.18 12/12/2024
+               // V1.19 1/8/2025
 
 	delay(2500);
 	lcd.clear();
@@ -814,6 +815,7 @@ else
 
     if (EE_flagValue == 170)
     {
+    lcd.print("Reading EEPROM"); // V1.19
     EEPROM.get(EE_FoutTX, FoutTX);
     hamBand_index = EEPROM.read(EE_hamBand_index);
     step_index = EEPROM.read(EE_step_index);
@@ -827,7 +829,10 @@ else
     EEPROM.get(EE_TRIM, TRIM); 
     EEPROM.get(EE_DIV_FACTOR, DIV_FACTOR);
     EEPROM.get(EE_X4, X4);
-        
+    EEPROM.get(EE_TX_ONLY, TX_ONLY); // V1.19
+
+    delay(1000); // V1.19
+    lcd.clear();    
     }
     else
     {	
@@ -872,9 +877,34 @@ else
 	calc_RX(FoutRX);
 	send_regs_RX();
 	// reset_PLL_A(); // V1.7, send_regs_RX() now does the reset if needed
+
+// V1.19 some actions for when TX_ONLY is true
+
+  if(TX_ONLY)
+  {
+    CLK0_1_OFF_KYDN = false;
+    TX_CLK2 = false;
+    VFO_Rx_Tx = 0;// NOT RIT mode
+    CW_pitch = 0;
+      key_down = false;
+      if(!digitalRead(TX_MODE))
+    {
+      key_down = true;
+      clock_0_ON();
+      if(QUAD) clock_1_ON();
+    }
+    if(!key_down)
+    {
+      clock_0_OFF();
+      if(QUAD) clock_1_OFF();
+    }
+  }
+  // V1.19 assume key is UP so don't turn on CLK0/1 if in TX_ONLY mode:
+  if(!TX_ONLY)
+  {
 	clock_0_ON(); // same	
 	if (QUAD) clock_1_ON(); // same V1.12, turn on only if QUAD is true
-	
+  }
 	Print_freq(FoutTX, LCDTopLine);	
 	
 	encoder_pins = (PINC & ENC_AB_MASK)>>2;  // In V1.8, pins are sifted to <1-0>
@@ -889,7 +919,7 @@ else
   }
 
 
-  if(!TX_CLK2) // V1.14 make sure CLK2 off
+  if(!TX_CLK2 || TX_ONLY) // V1.14 make sure CLK2 off V1.19 same for TX_ONLY mode
   {
     clock_2_OFF();
   }
@@ -962,6 +992,12 @@ else
 
 
 // V1.15
+
+/* USERS: You can define or undefine RELAY_CONTROL in the file "Si5351a_quad_config.h"
+  depending on whether you want to compile the code to control a PCF8575 IC
+  */
+
+
 #ifdef RELAY_CONTROL
 
   // Below, post serial message if PCF not found, but I won't  trap all
@@ -1081,12 +1117,15 @@ uint16_t loopCounter; // for testing/timing main loop
   {
     key_down = true;
 
+     clock_0_ON(); // V1.19
+     if(QUAD) clock_1_ON(); // V1.19
+
 			// key_down = true; // V1.16
 			digitalWrite(LEDPIN, HIGH);
 			send_regs_TX(); // change output frequency 
 			digitalWrite(TX_Out, LOW); // echo keyed line AFTER registers updated
 			
-			if(sidetone) tone(spkrpin, CW_pitch); // V1.3 create sidetone when key down
+			if(sidetone) tone(spkrpin, CW_pitch_ST); // V1.3 create sidetone when key down V1.19 add _ST
 
 			// V1.12 If using CLK2, turn off RX output to CLK0 and 1
 			// during key down if flag is true
@@ -1108,6 +1147,12 @@ uint16_t loopCounter; // for testing/timing main loop
 			send_regs_RX(); // change output frequency 
 			noTone(spkrpin); // turn off sidetone
 			
+      if(TX_ONLY)
+      {
+      clock_0_OFF(); // V1.19
+      if(QUAD) clock_1_OFF(); // V1.19
+      }
+
   // } // V1.16 move brace to V1.17 marker below ...
 
 			if(TX_CLK2) si5351aOutputOff(SI_CLK2_CONTROL); // V1.12 turn clock 2 off
@@ -1149,7 +1194,7 @@ uint16_t loopCounter; // for testing/timing main loop
         {
  
 
-            if(PB3Long) // main menu
+        if(PB3Long) // main menu
 			{
 				menu(); 
 				//lcd.clear();
@@ -1162,10 +1207,12 @@ uint16_t loopCounter; // for testing/timing main loop
             else if (PB2Short)
             {
 				//SingleBeep();  // **** TESTING ****
-				// v1.4a - what if we're in some odd step not 10 or 100?
+				// v1.4a - what if we're in some odd step not 10 or 100 or 1000?
 				if(step_index < 1) step_index = 1;
-				if(step_index > 2) step_index = 2;
-                step_index = (step_index==2)?1:2; // alternate 1 & 2
+				if(step_index > 3) step_index = 3; // V1.19 upper limit was 2
+                //step_index = (step_index==2)?1:2; // alternate 1 & 2
+                step_index++;
+                if(step_index == 4) step_index = 1; // V1.19 roll from 3 to 0
                 ShowStepFast(); 
 				PB2Short = false;
 			if(TRIM && (step_index == 2))
@@ -1174,7 +1221,8 @@ uint16_t loopCounter; // for testing/timing main loop
 			FoutTX = FoutTX - FoutTX % TuningStepSize[step_index];
 			}
             }
-			else if (PB1Long)
+
+			else if (PB1Long && !TX_ONLY) // V1.19 skip if TX_ONLY mode
 			{
 				if(VFO_Rx_Tx == 1)
 				{
@@ -1182,8 +1230,16 @@ uint16_t loopCounter; // for testing/timing main loop
 				}
 				PB1Long = false;
 			}
-			else if(PB1Short)
+
+      // ************** PB1 Short ***************************
+
+						else if(PB1Short)
 			{
+        if(TX_ONLY) // V1.19 alternate function for PB1Short when in TX_ONLY
+        {
+          spot_it();
+          goto _DidClear;
+        }
 				if(VFO_Rx_Tx == 0)RIT_ON();	
 				
 				// Below I'm adding a check for a "double tap" on PB1 when RIT
@@ -1212,6 +1268,7 @@ uint16_t loopCounter; // for testing/timing main loop
            // PBstate = 0;
             	PB1Short = false;
 			}
+			
 			
 			else if(PB2Long) // v.14a
 			{
@@ -1381,12 +1438,12 @@ void showChoice()
         {
       if (r_dir == 1)
       {
-      Menu_itemA++; //  0, 1, 2, 3, 4, 5, 6 are valid
-      if (Menu_itemA > 6) Menu_itemA = 0; 
+      Menu_itemA++; //  0, 1, 2, 3, 4, 5, 6, 7 are valid
+      if (Menu_itemA > 7) Menu_itemA = 0; // V1.19 was > 6
       }
       else if(r_dir == 2)
       {
-        if(Menu_itemA == 0) Menu_itemA = 6;
+        if(Menu_itemA == 0) Menu_itemA = 7; // V1.19 was 6
         else Menu_itemA--;
     	}
     
@@ -1441,9 +1498,15 @@ void showChoice()
       showChoiceA();
       delay(1000);
       }
+      else if (Menu_itemA == 6) // V1.19 added this block
+      {
+        TX_ONLY = !TX_ONLY;
+        showChoiceA();
+        delay(1000);
+      }
 
 		//else if (Menu_itemA == 6) doAdvanced(); // V1.14 
-    // item '6' falls through, resulting in EXIT
+    // item '7' falls through, resulting in EXIT
 	
 	}
 
@@ -1527,8 +1590,24 @@ void showChoiceA()
             {
               lcd.print(" false");
             } 
-          }				
-		else if (Menu_itemA == 6)  // V1.14 was 5
+          }
+
+          // V1.19 add item 6
+          else if(Menu_itemA == 6)
+          {
+            lcd.print("TX ONLY VFO?");
+                	lcd.setCursor(1,LCDBottomLine);
+        if (TX_ONLY)
+            {
+              lcd.print(" true ");
+            }
+            else
+            {
+              lcd.print(" false");
+            } 
+          }  
+			
+		else if (Menu_itemA == 7)  // V1.14 was 5 V1.19 was 6
         {
             lcd.print("EXIT");
         }				
@@ -1725,6 +1804,7 @@ void showChoiceA()
     EEPROM.put(EE_TRIM, TRIM);
     EEPROM.put(EE_DIV_FACTOR, DIV_FACTOR);
 		EEPROM.put(EE_X4, X4);
+    EEPROM.put(EE_TX_ONLY, TX_ONLY); // V1.19
 
      // To tell the user that EEPROM has been written, I'll do two
 		// beeps, at 400 Hz and then 500 Hz.
@@ -1769,16 +1849,18 @@ void showChoiceA()
 
 	void instructions()
 	{
+    uint16_t ExtraTime = 0; // V1.19
+    if(Verbose) ExtraTime = 1000;
 		lcd.clear();
 		lcd.print("PB3 HOLD");
 		lcd.setCursor(0, LCDBottomLine);
 		lcd.print("FOR MENU");
-		delay(1800);
+		delay(1800 + ExtraTime);
 		lcd.clear();
-		lcd.print("PB2 TAP TOGGLES");
+		lcd.print("PB2 TAP CHANGES");
 		lcd.setCursor(0, LCDBottomLine);
-		lcd.print("10/100 HZ STEP");
-		delay(2200);
+		lcd.print("STEP SIZE");
+		delay(2200 + ExtraTime);
 		
 		// V1.8, add startup display of encoder speed
 		lcd.clear();
@@ -1787,24 +1869,24 @@ void showChoiceA()
     {
 		lcd.print("Encoder: 1:");
 		lcd.print(DIV_FACTOR);
-		delay(1800);
+		delay(2500);
 		lcd.clear();
 
 		// V1.12 add messages for new config choices
 		lcd.print("QUAD OUT: ");
 		if(QUAD) lcd.print("Y");
 		else	lcd.print("N");
-    delay(2000);
+    delay(2500);
 		lcd.clear();
 		lcd.print("CLOCK 2 = TX: ");
 		if(TX_CLK2) lcd.print("Y");
 		else lcd.print("N");
-		delay(2000);
+		delay(2500);
 		lcd.clear();
 		lcd.print("I.F. Offset:");
 		lcd.setCursor(2, LCDBottomLine);
 		lcd.print(IF_OFFSET);
-		delay(2000);
+		delay(2500);
 		lcd.clear();
 		if(TX_CLK2) // Message only if CLK2 output is used
 		{
@@ -1814,12 +1896,24 @@ void showChoiceA()
 			lcd.print("Y");
 			}
 			else lcd.print("N");
-		
-    delay(2000);
-    #ifdef RELAY_CONTROL // V1.17 add this status to verbose mode
-    lcd.print("PCF8575: YES");
-    #endif
+      delay(2500);
+      lcd.clear();
     }
+
+
+    #ifdef RELAY_CONTROL // V1.17 add this status to verbose mode  
+    lcd.print("PCF8575: YES");
+    delay(2500); // V1.19
+    lcd.clear(); 
+    #endif
+ 
+    if(TX_ONLY) // V1.19
+    {
+      lcd.print("TX ONLY MODE: Y");
+
+    }
+      delay(2500);
+      lcd.clear();    
 
 	if(X4)
 	{
@@ -1829,7 +1923,7 @@ void showChoiceA()
 	{
 		lcd.print("F_OUT is X1");
 	}
-  delay(2000);			
+  delay(2500);			
 	}
 
   }
@@ -2206,6 +2300,18 @@ void Set_Freq(uint32_t frequency)
   si5351aOutputOff(SI_CLK2_CONTROL); // turn clock 2 off
   }
 
+
+  void clock_0_OFF() // V1.19
+  {
+  si5351aOutputOff(SI_CLK0_CONTROL); // turn clock 0 off
+  }
+
+
+  void clock_1_OFF() // V1.19
+  {
+  si5351aOutputOff(SI_CLK1_CONTROL); // turn clock 1 off
+  }  
+
 // *********************** STEP UP AND STEP DOWN FREQUENCY ******************
  
  // Step the frequency up or down by current step value
@@ -2496,21 +2602,27 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		//DoubleBeep(); // ************ TEST
 		uint8_t length, i;
 		uint8_t dest_point = 10; // end of dest field  *** WAS 9
+    char T_R_CHAR = 'R';
 		
 // V1.4: If I'm printing to line 0 (upper), I'll put an 'R' prefix in pos. 0
 //       If line 1 (lower), I'll put a 'T' there.		
 
+// V1.19 skipt the R and/or T if in TX_ONLY mode NO - I'm going to put in an * to 
+// show I'm in TX_ONLy mode
+
+ if(TX_ONLY) T_R_CHAR = '*';
+  {
 	if(line == 0)
 	{
 		lcd.setCursor(0, line);
-		lcd.print('R');
+		lcd.print(T_R_CHAR);
 	}
 	else
 	{
 		lcd.setCursor(0, line);
 		lcd.print('T');
 	}
-		
+  }
 		ultoa (f32, a_freq, 10); // left justifies in 2nd arg field
 		                             // 3rd argument is RADIX
 
@@ -2816,8 +2928,9 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		}
 		else digitalWrite(SB_Relay, LOW);
 
-		if(QUAD) clock_1_ON(); // V1.7, call to change output inverted / not inverted
+		if(QUAD && !TX_ONLY) clock_1_ON(); // V1.7, call to change output inverted / not inverted
 		                       // V1.12, don't turn CLK1 ON if QUAD not true
+                           // V1.19, don't turn CLK1 ON if TX_ONLY mode
 		
 		printSBSelected(); // v1.4b
 	}
@@ -2880,6 +2993,27 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		}
 	}
 
+  void spot_it()
+  {
+    SPOT = !SPOT; // toggle state
+    if(SPOT)
+    {
+    lcd.setCursor(0, LCDBottomLine );
+		lcd.print(" SPOT");
+    clock_0_ON();
+    if(QUAD) clock_1_ON();
+    }
+    else {
+
+    lcd.setCursor(0, LCDBottomLine );
+		lcd.print("     "); // V1.19 - erase 
+    if(!key_down) // outputs off unless key is closed
+    {
+    clock_0_OFF();
+    if(QUAD) clock_1_OFF();
+    }
+    }  
+  }
 // USERS:
 // If you changed the size of the step choices elsewhere, you will want to
 // change the text fields below to suit. The field only has three spaces,
@@ -2934,7 +3068,7 @@ static void Print_freq(uint32_t f32, uint8_t line)
 	void SingleBeep() // A beep of 40 WPM speed
 	{
 		delay(20);
-		tone(spkrpin, CW_pitch, 30);
+		tone(spkrpin, CW_pitch_ST, 30); // V1.19
 		//delay(30);
 		//noTone(spkrpin);
 		delay(20);
@@ -2943,11 +3077,11 @@ static void Print_freq(uint32_t f32, uint8_t line)
 	void DoubleBeep() // Two dits at 40 WPM speed (30 ms/dit)
 	{
 		delay(20);
-		tone(spkrpin, CW_pitch, 30);
+		tone(spkrpin, CW_pitch_ST, 30); // V1.19
 		//delay(30);
 		//noTone(spkrpin);
 		delay(30);
-		tone(spkrpin, CW_pitch, 30);
+		tone(spkrpin, CW_pitch_ST, 30); // V1.19
 		//delay(30);
 		//noTone(spkrpin);
 		delay(20);
