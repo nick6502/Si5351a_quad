@@ -2,6 +2,7 @@
 A VFO with quadrature outputs based on the Si5351a frequency synthesizer <p>
 This project contains source code for the synthesizer project. It is for the Arduinos based on the ATmega328 MCUs, such as the Nano or UNO. 
 Written by Nick Kennedy, WA5BDU<p>
+<b>NOTE: V1.19 adds another parameter to those saved in EEPROM. To insure that this location exists, one should execute SAVE STATE from the menu after loading V1.19. </b><p>
 V1.19 of 1/10/2025 adds a mode called TX ONLY. This allows using the synthesizer as a simple VFO driving a transmitter. Output exists only
 when the key is closed, but there is a SPOT function to turn output On and Off again for spotting. There is no output from any clock when the key is open.<br>
 V1.19 also changes the function of the PB2 Tap action. Formerly it alternated betwewen 10 and 100 Hz step sizes. Now it steps through 10, 100 and 1000 Hz step sizes. The object is to allow faster large QSY without going through the menu.<p>
