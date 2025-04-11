@@ -7,26 +7,33 @@ precede each line to potentially be edited.
 
 */
 
+// USERS: Below is the I2C address of the Si5351a device
 
+#define SI5351BX_ADDR 0x60   // I2C address of Si5351   (typical)
+
+// USERS: Below is the I2C address for the PCF8575 realy control IC,, when used
+
+#define PCF8575_I2C_ADR 0x20
 
 // **********  BELOW - CHOSE I2C OR PARALLEL INTERFACE FOR LCD *************
 
-// USER: IF USING AN LCD DISPLAY WITH A PARALLEL INTERFACE, 
-// REMOVE THE COMMENT MARKS FROM THE LINE BELOW. IF USING AN I2C
-// INTERFACE, THE COMMENT MARKS SHOULD REMAIN. (A COMMENT MARK IS
-// TWO FORWARD SLASHES)
 
+// USERS: The line below (#define I2C_LCD) should exist if you are using an LCD
+// with I2C interface. If you are using one with a parallel interface, delete
+// or comment out that line.  
+// The program will then select which LCD library to include
+// Note that when using the I2C version, you can also change the I2C address if
+// is something other than 0x3F shown below
 
-// #include <LiquidCrystal.h> // Remove comment marks '//' if not I2C interface
+#define I2C_LCD 1  
 
-// USER: IF USING AN LCD DISPLAY FITTED WITH AN I2C INTERFACE, THE LINES BELOW
-// SHOULD REMAIN UNCOMMENTED AND THE ONE ABOVE COMMENTED OUT OR DELETED
-// OTHERWISE, ADD COMMENT MARKS OR DELETE THE TWO LINES BELOW
+#if I2C_LCD
+#include <LiquidCrystal_I2C.h>
+#define LCD_I2C_ADR 0x3F
+#else
 
-#include <LiquidCrystal_I2C.h> // comment out if NOT I2C
-#define I2C_LCD true // comment out if NOT I2C
-
-
+#include <LiquidCrystal.h>
+#endif
 
 
 // **************************************************************************
@@ -45,7 +52,8 @@ precede each line to potentially be edited.
 	// #define XTAL_FREQ 27000000 // Crystal frequency for Hans' board
 	// #define XTAL_FREQ 25000000 // NRK - Adafruit board is 25 MHz
 	
-	#define XTAL_FREQ 24999345 // my specific Si5351a board
+	//#define XTAL_FREQ 24999345 // my specific Si5351a board
+  #define XTAL_FREQ 25001301 // This one is for my development lash-up
 
 	/*
 	USERS:
@@ -94,3 +102,19 @@ precede each line to potentially be edited.
   uint8_t Relay_lines[11] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
   
 #endif
+
+// USERS: If you install a pot for CW speed control, the statement below
+// should not be commented out. If you do not use a speed pot, you should
+// place comment marks ('//') in front ot the #define statement.
+
+#define PotExists 1
+
+// V2.0i add VFO coverage for HW8 as an option
+
+// ***************************** HW-8  HW-8  HW-8 **************************
+
+//#define HW8
+
+//#define SERIALINFO // Says, do print out information to serial monitor on startup
+
+#define SERIALINFO // Tell program to send some parameters to serial monitor on startup

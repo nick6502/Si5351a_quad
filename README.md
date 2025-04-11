@@ -1,7 +1,9 @@
 # Si5351a_quad
 A VFO with quadrature outputs based on the Si5351a frequency synthesizer <p>
 This project contains source code for the synthesizer project. It is for the Arduinos based on the ATmega328 MCUs, such as the Nano or UNO. 
-Written by Nick Kennedy, WA5BDU<p>
+Written by Nick Kennedy, WA5BDU</p>
+<p>V2.2 added 4/11/2025. My Keyer program has been merged with the program. It is a full-featured keyer well integrated into the program. <b>
+The other major addition is an "HW-8 Mode" compilation option where the program is customized for use with the HW-8 transceiver. <b>
 <b>NOTE: V1.19 adds another parameter to those saved in EEPROM. To insure that this location exists, one should execute SAVE STATE from the menu after loading V1.19. </b><p>
 V1.19 of 1/10/2025 adds a mode called TX ONLY. This allows using the synthesizer as a simple VFO driving a transmitter. Output exists only
 when the key is closed, but there is a SPOT function to turn output On and Off again for spotting. There is no output from any clock when the key is open.<br>

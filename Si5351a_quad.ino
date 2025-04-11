@@ -1,241 +1,34 @@
 
-// V1.18, December 12, 2024
+// V1.20, January 23, 2025
+// After this revision is complete, the next revision will be V2.0 and will include the
+// keyer.
+// V1.21 Added keyer plus HW-8 mode
+// V2.1c, Mateusz reported sideband selection didn't work. Fix in doLSB_USB()
+// V2.1d, Don VE3IDS revealed problems with erratic frequency output 3/29/2025
+// V2.1e, will add quick method for Phone/CW switch, request from Mateusz,. start 4/2/2025
+// V2.1e also added bried display of keyer speed after changing
+// V2.1f Mateusz reported CLK2 keyed ON in "TU" opening message
 
+// I started this program in May, 2018
 
-/*
-	August 8, 2023 - starting modifications for V1.12. The following user
-	configurable options have been added:
-	
-	* An option to use an I2C LCD interface or use the existing parallel 
-	  interface. The required display is still 2x16 LCD
-	
-	* Ability to turn off the quadrature output if it's not desired or needed.
-	  When this is done, there's no output from Clock 1
-	  
-	* Add an I.F. offset for superhet receivers. The specified offset is added
-	  to the displayed receive frequency
-	  
-	* Add an output from Clock 2 which provides the transmit frequency for a
-	  "straight through" transmitter with no hetrodyning adjustment. This 
-	  output would only be present when the key or PTT is activated
-	  
-	* Turn Clock 0 and 1 (if used) off on Key Down. The intent is that this 
-	  would mute the receiver using that clock for its L.O. This option is 
-	  available when Clock 2 is being used for the transmitter as described
-	  above
-	
-	
-	
-*/
-
-// September 18/2023 - V1.13 Ron Taylor reported that his unit came up in
-//                     the Key Down mode. I added a statement in SETUP() to
-//                     start up in Key Up mode. 
-
-// August 8, 2023 - Saving V1.11 as functional before proceeding to try to
-// add I2C LCD as an option plus other features.
-
-// **************************************************************************
-
-// si5351a_quad.ino - a full-featured I/Q VFO
-// by Nick Kennedy, WA5BDU
-// V1.7 issued 4/29/2022
-// V1.8 interrupt driven rotary encoder, scroll down for details
-//      1/11/2023.  Previous revision BACKUP marked with this date
-// V1.9, add more possible ratios for steps per encoder pulse 1/24/2023
-
-// 4/16/2023 - IDE wouldn't load file because the first letter was s
-// lowercase but the folder name started with S (UC). So I changed 
-// filename 1st letter to UC.
-
-
-
-// Si5351a controller with I/Q outputs, rotary encoder tuning
-// and LCD display. I started with some demo code from Hans Summers, which
-// could take a frequency, calculate registers, and send them to the chip.
-
-// "Hans Summers, 2015 Website: http://www.hanssummers.com"
-
-
-// Expanded by Nick Kennedy WA5BDU based on Hans' presentation at
-// FDIM 2018. First I want to set up clock 1 to have output on the same
-// frequency as clock 0. Secondly, I want to set the phase shift register
-// per the presentation and see if I get 90 degree shifted signals.
-// My changes generally marked 'NRK'
-// NRK 5/23/2018
-// Quadrature output down to 3.5 MHz working, 5/24/2018
-// Moved the commands to turn CLK0 and CLK1 ON out of setFrequency and
-// made them separate routines, called only once. That seems to work OK.
-// Also moved the Reset PLL_A command to a separate routine which I currently
-// only call when changing bands. That works OK too.
-
-// Next, I'm importing and adapting the LCD and rotary encoder routines from
-// my si570_2015 program. Also adding ham bands and saving the controller's
-// state in EEPROM, with auto loading on boot up.
-
-// I did a loop of 100 frequency step changes with an LCD update for each.
-// One step plus display update takes 13.2 ms.
-// But wait, the update associated with normal T/R switching doesn't require
-// a display update. So without LCD updating, it's 9.4 ms. Still not as fast
-// as I'd like. But wait again - When I'm on a frequency toggling between
-// TX and RX, I don't need to calculate registers every time. I need TX and
-// RX pre-calculated and just send them in response to a transition from 
-// RX to TX and back.
-
-// 1/3/2019 - I changed the I2C routines from those Hans used to the Wire
-// library in hopes of speeding up a frequency change. I only got minor speed
-// increase.
-
-// 1/4/2019 Added this function: Wire.setClock(400000);
-// Initial value of 100,000 didn't help but 
-// going to 400,000 cut my time from 8.19
-// to 2.8 ms per frequency upload.
-
-// V1.1 is the version change which adds TX offset, RIT and so on
-// As of 1/12/2020, I have added about all the features I can think of and
-// tested them and fixed any bugs.
-
-// 1/16/2020 - adding an output PIN to control a sideband select relay. Also
-// adding another output PIN for key down to echo the KEY IN line, but not
-// change state until after the TX registers have been sent and change back
-// before the RX registers are sent.
-
-// 3/17/2020- I continue to have problems with the newTone() library not
-// working or disappearing, so I've gone back to the old built-in tone()
-// function
-
-// 9/4/2020 - I'm going to add an option to have the output frequency be
-// 4 times the indicated frequency for people using a Tayloe type receiver
-// with a /4 circuit at the front end. This means Jim Dunlap, WB5ZOR
-// Boolean X4 will be true if this is in effect. V1.2. NOTE: As of V1.14
-// X4 will be in the ADVANCED sub-menu and will be saved in EEPROM
-
-// 3/27/2021 - V1.5 trims the extra digits when step size is changed. 
-// Also, HARDWARE CHANGE - I changed out the Nano because the USB housing
-// was slightly bent on #17 and when I tried to plug in I pushed the whole
-// whole thing out of the socket. Had to wait for some new ones.  I put in
-// #20 which programs differently:
-// Programmer: “Arduino as ISP”, and MCU: ATMega328P without the 
-// “old bootloader” part.
-
-// 3/18/2021 - V1.6 Ian, G3VAJ reported that the band selection rollover on
-// both above 2 meters and below 80 meters first goes to an invalid frequency
-// and if you continue, to the correct one. I had my hamBand_index
-// variable maximum at 11 and it should be 10 (11 items, 0 through 10)
-//
-// Similarly, the variable step_index declared as uint8_t failed the 
-// < 0 test so I changed it to a signed char type.
-//
-// V1.7 of 4/28/2022, reported by Tony Bertezzolo that the 90 degree phase
-// shift is lost when tuning across certain boundaries. I found from reading
-// Hans Summers' paper from FDIM 2018 that if the value of dividerRX (or TX)
-// sent to the chip is different from the previous one, a reset of PLL A is
-// necessary to maintain the phase relationship. This version tests for that
-// change and does a reset of the PLL if it occurs. I also removed some
-// other reset PLL calls which are no longer needed.  The last value sent
-// is now stored in dividerLast 
-//
-// Also, while fixing the above, I discovered that enabling RIT after having
-// used it on a previous band brings back that other bands last RX frequency
-// which is not desired. I've set RITSave = 0 when changing bands to prevent
-// this from happening.
-//
-// Another change is V1.7 is to add a sotware change to give 270 degrees shift
-// instead of 90 degrees. This is incorporated into the existing doLSB_USB()
-// routine. This means that switching between USB and LSB won't have to be
-// done in hardware.
-
-// V1.8 of 1/18/2023 changes to rotary encoder routines to be interrupt driven. This is 
-// intended to help those with 'fast' encoders by preventing missed pulses.
-// Al, K2BLA is one. I did this as an experiment in my Multifunk hardware
-// in a sketch called Rotary_INT.ino. Now I have to adapt that code to this
-// file. 
-// I also found an apparent bug where the RX frequency was being written to
-// both lines after going key up and seeing we are in RIT mode. Now puts 
-// RX on top and TX on bottom line.
-
-// V1.9 starting 1/24/2023 
-// I barely got V1.9 out when I started getting requests for even more 
-// division. It's not surprising based on the high ppr of some of 
-// these optical encoders. I'm going to try what I hope is a more logical 
-// approach this time. I'll just increment a byte for each transition and
-// add to the step queue when it reaches my specified number. So should be
-// able to divide by any number from 1 to 255.
-
-// V1.10, when EEPROM has sideband = upper stored, program does not
-// swap to USB or CWU immediate after reading EEPROM. Need to correct.
-// 4/16/2023
-
-// V1.11, report from Ron WA7GIL that after he changes bands and presses the
-// key, the frequency (on a counter) goes back to the previous band. I added
-// a line to the band change routine to have it calculate TX registers for 
-// the new band. Apparently the older calculated TX registers were still
-// being sent to the Si5351a.
-
-/*
-  V1.14, starting 12/6/2023. I'm going to move several options from source
-  code '#define' statements to EEPROM, changed from a menu option. This is
-  to make it easier on users. Creating a new "advanced" sub-menu under
-  the main menu.
-
-  V1.15, starting 11/8/2024, adding control of external filter switching
-  on a per-band basis, for example LPFs in a transmitter. Switching is
-  via a PCF8575 IC which is controlled by I2C and can do I/O on 16 lines.
-  Requested by Matt (Mateusz), SQ3MB. It will be an option, to be 
-  compiled if RELAY_CONTROL is defined.
-
-  V1.16, I have freq info going to the SI5351a every time through the loop
-  for T/R reasons. Should only update when the key line changes state. I fixed
-  that. Problem noted by Mateusz SQ3MB 
-
-  V1.17, more for the above problem. I needed to include a couple more statements
-  in the area that just executes when the key has gone open (key up). I also 
-  added a statement to the Verbose startup report saying PCF8575: YES, when 
-  the compile flag for that has been defined. 12/10/2024
-  
-  V1.18, add a band map (boolean bandInclude[11]) for locking out certain bands 
-  from the band selection menu so user can customize what bands are shown 
-  when he turns the dial. 12/11/2024
-
- V1.19, I realized I may want to use this VFO to drive a transmitter only, for
- instance my EICO 720. In such a case, I don't want ANY outputs in the Key Up
- state as they might QRM my separate receiver. So here comes TX_ONLY as a
- true or false option. 
-
-	
-*/ 
-
-//       ************ What is PIND? *****************
-//
-// With these pin registers you can read or write a whole byte of
-// pins at once, if they are set as digital inputs.
-
-// Below, I read the PORT D pins and mask off (keep) bits 2 & 3
-
-// encoder_now = (PIND & 0b00001100);
-
-// This is processor dependent, not a standard C thing. There's also 
-// PINB and PINC. How many pins depends on the processor. Note that with
-// the N5IB hardware, I'm using ADC pins from PORTC set up as digital
-// inputs for the encoder inputs.  So I should read PINC
-
-// #include <inttypes.h> // not sure what it's for. removed 1/16/2020
+// interim version 2.0e.  After erratic program operation and noticing that I'm almost
+// out of RAM, I started using the 'F' macro to store strings in Serial.print() statements
+// that may have fixed it.
+// V2.0g - abandoning shared pins for LCD.  Now DB7 will use D13 and DB6 will use A2
+// SB select line will be removed (was A2)
 
 // Note IC2_LCD is defined (or not) in the Si5351a_quad_config.h file
 
-#include "Si5351a_quad_config.h"
-
-
+ #include "Si5351a_quad_config.h"
 
 #include <EEPROM.h>
-#include <Wire.h> // NRKw
+#include <Wire.h> 
 
 #ifdef RELAY_CONTROL
 #include <Adafruit_PCF8575.h>
 Adafruit_PCF8575 pcf;
 #endif
 
-//#include <NewTone.h> 
 
 
 
@@ -243,13 +36,13 @@ Adafruit_PCF8575 pcf;
 
 #define ENC_A 3       // Encoder pin A to D3 (V1.8, was A1)
 #define ENC_B 2       // Encoder pin B to D2 (V1.8, was A0)
-#define LEDPIN 13	   // Internal LED, can also use for I/O NRK
+//#define LEDPIN 13	   // Internal LED, can also use for I/O NRK, V2.0g got rid of it
 #define spkrpin 9     // Pin for audio to speaker for beep
 #define SW1 12		  // Pin for pushbutton PB1
 #define SW2 11        // Pin for pushbutton PB2
-#define TX_MODE 8 // Pin to monitor for key_down status. Reads LOW when key is down
-#define TX_Out 10 // Echoes TX_MODE but changes *after* registers sent to chip
-#define SB_Relay A2 // Sideband select. HIGH in LSB, LOW in USB
+#define Key_In 8 // Pin to monitor for key_down status. Reads LOW when key is down
+#define TX_Out 10 // Echoes Key_In but changes *after* registers sent to chip
+//#define SB_Relay A2 // Sideband select. HIGH in LSB, LOW in USB
 
 #define ENC_AB_MASK 0b00001100 // mask off encoder bits V1.8 was 0,1 now 2,3
 #define LCDBottomLine 1
@@ -272,7 +65,7 @@ Adafruit_PCF8575 pcf;
   #define EE_FoutTX 0
   #define EE_hamBand_index EE_FoutTX + 4
   #define EE_step_index EE_hamBand_index + 1
-  #define EE_flag EE_step_index + 1
+  #define EE_flag EE_step_index + 1 // this tells the program EEPROM has been written
   #define EE_LSBMode EE_flag + 1
   #define EE_modeCW EE_LSBMode + 1
   #define EE_CW_pitch EE_modeCW + 1 // this one will use 2 bytes v1.4b
@@ -284,9 +77,14 @@ Adafruit_PCF8575 pcf;
   #define EE_DIV_FACTOR EE_TRIM + 1 // V1.13, uint8_t
   #define EE_X4 EE_DIV_FACTOR + 1 // V1.13 boolean
   #define EE_TX_ONLY EE_X4 + 1 // V1.19 boolean
+  #define EE_keyDNstate EE_TX_ONLY + 1 // V2.0
+  #define EE_SpeedPot EE_keyDNstate + 1
+  #define EE_ModeA EE_SpeedPot + 1
 
 
+// V2.1b 2/19/2025 below defs not used, so comment out for now:
 
+/*
 #define I2C_START 0x08
 #define I2C_START_RPT 0x10
 #define I2C_SLA_W_ACK 0x18
@@ -295,6 +93,8 @@ Adafruit_PCF8575 pcf;
 #define I2C_WRITE 0b11000000 // slave address is 0x60, 7 bit but here shifted
 #define I2C_READ 0b11000001 // left 1 place so b0 of 8 bit field 0 is R/W bit
                             // NRK
+                            */
+
 #ifndef SI5351A_H
 #define SI5351A_H
 
@@ -325,55 +125,50 @@ Adafruit_PCF8575 pcf;
 #define denom 1048575UL // V1.1, denom is constant 2^20 - 1
 
 	
-	/*
-	USERS:
-  Note: I moved the definition of the crystal frequency to the CONFIG
-  file to make it more accessible.
-
-	I determined my actual crystal frequency like this:
-	Listening on my K3 with the Si5351a set at 7025000 Hz I read 7024816 Hz
-	So my actual frequency is 25,000,000 * 7,024,816 / 7,025,000 which gives
-	me 24,999,345. Of course I could have used a more accurate standard than
-	the K3 if I'd chosen to.
-	Please note that while in the CW mode, the output will be shifted by the
-	value of CW_pitch, so you should take your reading in the “phone” mode
-	or have the key closed.
-	*/
-
-
+	
 //  ** W0EB definitions ***
 
-#define SI5351BX_ADDR 0x60   // I2C address of Si5351   (typical)
+// V2.1b 2/20/2025 moving address definition below to header file 
+// for easire editing by users
+
+//#define SI5351BX_ADDR 0x60   // I2C address of Si5351   (typical)
    
 void si5351aOutputOff(uint8_t clk);
-void Set_Freq(uint32_t frequency);
+// void Set_Freq(uint32_t frequency); V2.0i, never called so I'm removing
 
 
-#endif //SI5351A_H
+#endif //SI5351A_H - corresponding #if is #ifndef SI5351A_H, up 30 lines
 
 // NRK add some definitions for LCD pins
 
 
-
-#define RS		7 // LCD RS 
-#define E		6 // LCD Enable 
+#define RS	  7 // LCD RS 
+#define E		  6 // LCD Enable 
 #define DB4		A0 // LCD DB4 V1.8, was 2
 #define DB5		A1 // LCD DB5 V1.8, was 3
-#define DB6		4 // LCD DB6 
-#define DB7		5 // LCD DB7 
+#define DB6		A2 // LCD DB6  - shared with paddle dot contact V2.0g, no more sharing
+#define DB7		13 // LCD DB7  - shared with paddle dash contact,  V2.0g, no more sharing
 
-// Below, connections for I2C Arduino to Si5351a, do not have to be
-// defined because they are dedicated pins in the AVR chip:
+
 
 // Note A4 is for SDA
 // Note A5 is for SCL
 
+// Below V2.0 defines from mini keyer
 
-
+	#define DotContact 4 // is is shared with LCD
+	#define DashContact 5 // is is shared with LCD
+  #define POT_ADC A3	
+	#define WPM 22
+	#define SPD_LIMIT_LO 10.0 
+	#define SPD_LIMIT_HI 35.0 // lowered from 45 to 35 for W A 5 B D U, who can't send that fast
+	#define CMND_SPEED 22
+  #define KYR_hold 3000 // USERS: milliseconds of KYR mode after paddle sending
+    
 // ************     GLOBAL VARIABLES    ****************************
 
-	unsigned long timing_start, timing_start_2;
-
+	unsigned long timing_start, timing_start_2, timing_keyer;
+  uint16_t loopCounter; // for testing/timing main loop V2.0 moved definition out ofloop
    volatile uint8_t encoder_pins; // last state of rotary encoder pins V1.8
    uint8_t encoder_now;
    uint8_t r_dir; // 1 is increment (CW), 2 decrement, 0 nothing V1.8 not used
@@ -390,17 +185,24 @@ void Set_Freq(uint32_t frequency);
    uint8_t dn_pile = 0; //          CCW
    
    volatile uint8_t encoder_div = 0; // V1.9 counter to determine # of pulses per step
+
  
-//  bool FastStart = false; // add to V1.13 V1.14 replaced by Verbose
+  bool FastStart = false; // add to V1.13 V1.14 replaced by Verbose V2.0 bring it back
   bool QUAD = true; // V1.13, do provide quadrature outputs on CLK0 & CLK1
   bool TX_CLK2 = false; // V1.13 don't provide TX output on CLK2
   bool CLK0_1_OFF_KYDN = false; // V1.13 don't turn off CLKs 0 & 1 on key down
   bool TRIM = true; // V1.13 do zero less significant digits on larger step
-  uint8_t DIV_FACTOR = 1; // V1.13 encoder pulses per count. 
+  uint8_t DIV_FACTOR = 4; // V1.13 encoder pulses per count. NOTE: EEPROM GOVERNS
   bool TX_ONLY = false; // V1.19, output only on key down, from CLK0, plus 1 if quadrature
+	bool TX_ONLY_OLD = false; // V2.1e flag for exiting Send CW mode
   bool SPOT = false; // V1.19 toggled by PB1. When true, output is ON in key up state
-
+  bool KeyerActive = false; // V2.0, paddle closed within the last 3 seconds then true
+  bool printedKYR = false; // true when KYR was last printed to LCD field
+	bool LCDtrash = false; // true if WPM update or other trashes display
+	unsigned long LCDFixTime; // Need to time how long before fixing screen
   uint8_t EE_flagValue = 255; // V1.13, will be 170 after EEPROM written
+  bool DidReadEE = false; // V2.1 I need to know if I did read EEPROM
+  bool SkipEEread = false; // True when we want to skip EEPROM read. PB2Long during S/U
 
  //    FUNCTION DECLARATIONS 
  
@@ -410,10 +212,22 @@ void Set_Freq(uint32_t frequency);
   void doPitch();
   void doCWPhone();
   void showSidetone();
+	//void SPRINT_inhibits(); // TEMPORARY FOR TROUBLESHOOTING
 
   uint32_t FoutRX; // Desired output frequency V1.1, have RX and TX
 	uint32_t FoutTX; 
 	uint32_t RITSave; // Store FoutRX here when turning RIT off, so can restore
+  #ifdef HW8 // V2.oi
+  //#define HW8startDial 50000 // 50 kHz on dial
+  uint32_t HW8DialRX = 50000;
+  uint32_t HW8DialTX = 50000;
+  #define HW8FoutMax 8895000 // Fout is this when dial is at 000
+  uint32_t HW8FQtoDial(uint32_t actualFQ);
+  uint32_t HW8DialtoFQ(uint32_t dialrdg);
+ // void DoPrintHW8(); // ***********  FOR TESTING 
+
+  #endif
+
 	void menu();
 	void showChoice();
 	void doSteps();
@@ -427,13 +241,14 @@ void Set_Freq(uint32_t frequency);
 	void calc_TX(uint32_t frequency);
 	void send_regs_RX();
 	void send_regs_TX();
-	void Set_Freq(uint32_t frequency);
+	// void Set_Freq(uint32_t frequency); V2.0i declared above, so comment out
 	void clock_0_ON();
 	void clock_1_ON();
 	void clock_2_ON();
   void clock_2_OFF(); // V1.14
   void clock_0_OFF(); // V1.19
   void clock_1_OFF(); // V1.19 
+	void CLK0_1_on_quad(); // V2.1f
   void spot_it(); // V1.19
 	void step_up();
 	void step_down();
@@ -454,6 +269,7 @@ void Set_Freq(uint32_t frequency);
 	void UpdateScreen();
 	void SingleBeep();
 	void DoubleBeep();
+  void bad_sound();
 	void Go_(uint32_t thefreq);
 	static void Print_freq(uint32_t f32, uint8_t line);
 	uint8_t Rotary();
@@ -464,28 +280,99 @@ void Set_Freq(uint32_t frequency);
   void Select_Relay(uint8_t HBindex);
   //void CycleBands(); // V1.15 for testing relay control
   #endif
+	uint8_t read_register(uint8_t regstr);
+	void SetUp_TX_ONLY();
+  void morseSetSpeed(); // V2.0 from keyer-mini
+	bool morseSendString(char mstring[]);
+  void SendTestText(); // V2.0 added
+  void KeyDownActions(); // V2.0 created
+  void KeyUpActions(); // same
+  void readSpeedPot(); // V2.0
+  void freeSpeedPot(); 
+  void checkPaddles();
+  void PspaceDit();
+  void PspaceDah();
+  void ProcessChar();
+  void LockOut();
+ // void xsetup();
+  void xloop();
+  //void pins4LCD();
+ // void pins4paddle();
+void  shiftMorseLeft();
+
+  // V1.20 from keyer mini:
+	uint16_t ditlen, dahlen, halfspace; 
+	uint8_t speed, speed_old, speed_old_1;
+//	char SpeedString[] = "00 WPM"; // text equivalent of speed V2.1e - found not being used
+	uint16_t wordspace;
+  uint16_t CW_pitch = 600; // local peak for CEM-1201(50) V0.1 keep temorarily
+  uint16_t CW_pitch_ST = 480;  // ST means for sidetone
+	uint8_t keyDNstate = LOW; // state of key out pin when key is closed
+	uint8_t keyUPstate = HIGH;
+bool DitLatch = false; 
+	bool DahLatch = false;
+	bool SpLatchDit = false;
+	bool SpLatchDah = false;
+	bool DoTransmit = true; // "true" keys TX on keydown, "false" tone only
+	bool DoTransmitOld = true; // save old while primary temporarily altered
+  // DoTransmit is for internal logic. OnAir is for the user to prohibit TX
+  bool OnAir = true; // V2.0 1/30/25 true if KEY_OUT will be keyed
+  bool testText = false; // V2.0h if sendCWtestText is going on, inhibit TX keying
+	uint8_t buildchar = 1; // where dots and dashes assemble into a char
+	uint8_t newchar = 0; // buildchar moved here when done. 0 means not done
+	uint8_t i = 0; // counter
+	bool char_done = true; // True when char sent by user is finished
+	uint8_t DeadMan = 255; // Count for stuck key shut down feature
+	bool DoLockout = false; // flag that lockout condition exists
+	bool CMNDMode = false; 
+	bool SpeedPot = true; // Do use speed pot to set speed
+	int staticPot; // save current reading when going to disable mode
+  // Users note that #define PotExists in header file tells if pot is installed
+	uint8_t CMNDChar = 'Z'; // CMNDChar is 1st letter of cmnd seq. Z = none
+	uint8_t CMND_SEQ[4]; // Here cmnd seq chars after CMNDChar are accumulated
+	uint8_t CMND_SEQ_ptr = 0;
+	uint8_t XChar; // char translated from newchar to ascii
+  bool LCDmode = true; // V2.0 tells if Dot/Dash contact pins config for LCD or paddle
+  char msg1[] = "TEST MESSAGE";
+  char msg2[] ="MESSAGE NUMBER TWO";
+  char msg3[] = "MESSAGE THREE";
 	
+	// **USER** two variables below
+	
+	bool ModeA = false; // true for Mode A, false for Mode B
+	bool SideTone = true; // true means DO generate sidetone
+	bool SideToneOld = true; // place to store current while changing
+  bool Did_Once = false; // for something to execute once only ******  TESTING *********
+
+	uint8_t misc_count = 0;
+	uint8_t loopCount = 0; // count passes through main loop, for speed pot check every 255
+	// unsigned long timing_start; // already defined
+  //uint8_t MorseLCDptr = 15; // V2.0e next place in MorseField[] for char
+	// String SerialMsg = "";
+
+// From keyer-mini  Explanations related to array are in mini file:
+
+	byte backmorse[128] = {32, 32, 'E', 'T', 'I', 'A', 'N', 'M', 'S', 'U', // 9
+	                     'R', 'W', 'D', 'K', 'G', 'O', 'H', 'V', 'F', ' ', // 19
+					'L', 10, 'P', 'J', 'B', 'X', 'C', 'Y', 'Z', 'Q', ' ', // 30
+					8, '5', '4', 32, '3', 32, 32, 32, '2', '*', 32, 32, 32, // 43
+					32, 32, 32, '1', '6', '=', '/', 32, 32, '!', 32, 32, // 55
+					'7', 32, 32, 0,'8', 32, '9', '0', 32, 32, 32, 32, 32, // 68
+					32, 32, 32, 32, 32, 32, 32, '?', 32, 32, 32, 32, 32, 34, // 82
+					32, 32, '.', 32, 32, 32, 32, '@', 32, 32, 32, 39, 27, // 95
+					32, 32, 32, 32, 32, 32, 32, 32, 32, 32, ';', 32, 32, 32,
+					32, 32, 32, 32, 32, ',', 32, 32, 32, ':', 32, 32, 32, 32,
+					32, 32, 32, 32,};
 	// for RIT/XIT operations:
  
 	uint8_t VFO_Rx_Tx = 0; // 0 = synch, 1 = RX, 2 = TX NOTE: 2 is never used,
 	                       // 0 means no RIT and 1 means RIT is on
 	
-	// V1.7, CLK1_hi is the starting point for setting up SI_CLK1_CONTROL
-	// in the clock_1_ON() routine. It was previously static at 0x4F but
-	// now to invert the output for the USB/LSB selection function, it 
-	// will alternate between 0x4F (not inverted) and 0x5F (inverted)
+	
 	
 	uint8_t CLK1_hi = 0x4F; 
 	
-	// Step sizes for use when incrementing & decrement Fout
 	
-	// USERS:
-	// Users may wish to use some other step sizes by editing those seen
-	// below. For example 1, 5, 10, 50 ...  Do keep seven total though.
-	
-	// V1.6 with step_index as a uint8_t, the test for roll-under to 
-	// negative fails because it is unsigned. A char can be used as
-	// a signed or unsigned 8-bit number, so change to signed char
 		 
 	uint32_t TuningStepSize[7] = {1, 10, 100, 1000, 10000, 100000, 1000000};
 	signed char step_index = 2; // start with 100 Hz steps	V1.6 changed type
@@ -503,12 +390,7 @@ void Set_Freq(uint32_t frequency);
 	uint8_t	Menu_item; // pointer to currently selected menu entry
   uint8_t Menu_itemA; // V1.14
 
-// V1.18 below, create a band map to show which bands will show in the menu
-// selection.  Note that 'true' means DO include the band and 'false' means
-// do not include it.
 
-// USERS: To remove any band from the menu selection list, change the 'true' to 'false'
-// for that entry. See the above "Bands[]" array for the sequence.
 
 
 	boolean bandInclude[11] = {true, false, true, true, true, true, true, true, 
@@ -519,10 +401,21 @@ void Set_Freq(uint32_t frequency);
 
 	// Variables for formatting frequency for ASCII from DDS60_M328P.c
 
-    char a_freq[9]; // 8-char storage for frequency in ASCII
+  // Note that when I reserve char xx[12], the compiler reserves me
+  // twelve locations numbered 0 through 11 and note that 11 must be
+  // null or zero if this is a string. So I have left 0 through 10
+  // or 11 characters
+
+    char a_freq[10]; // 8-char storage for frequency in ASCII. It will hold the 9-digit
+                    // frequency in ASCII chars, but no terminator, so don't print it.
+                    // V2.0i, I'm adding 1 to the length, going from 9 to 10
+
     char a_freq_fmt[12]; // storage for 11 chars formatted freq 114,098.113
    // NOTE: Above changed from 11 to 12 for Si570 version > 100 MHz	
    
+   char MorseField[17]; // V2.0e, for printing paddle sent text to bottom line
+   bool MorseToLCD = false; // V2.0f, do/don't send paddle text to LCD
+
 	// bool bandChanged;
 
 
@@ -546,21 +439,21 @@ void Set_Freq(uint32_t frequency);
 	
 	// initialize the lcd library with the numbers of the interface pins
 	
-#if !defined(I2C_LCD) // V1.12
+#ifndef I2C_LCD // V1.12
 	LiquidCrystal lcd(RS, E, DB4, DB5, DB6, DB7);	
 #endif
 
-#if defined(I2C_LCD)
- LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE); // Addr, En, Rw, Rs, d4, d5, d6, d7, backlighpin, polarity
+// V2.1b 2/19/2025 in library statement below, changed hard-coded lcd address of 0x3F
+// to constant label LCD_I2C_ADR which is defined in the header file as 0x3F
+
+#ifdef I2C_LCD
+ LiquidCrystal_I2C lcd(LCD_I2C_ADR, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE); // Addr, En, Rw, Rs, d4, d5, d6, d7, backlighpin, polarity
 #endif
 
 	void dispfreq1();
 
-// Bring in some variables from my Si570 program to allow T/R frequency
-// switching, offset (pitch) and RIT.
 
-  uint16_t CW_pitch = 480; 
-  uint16_t CW_pitch_ST = 480;  
+
   boolean modeCW = true; // true means do frequency display correction for offset
   boolean sidetone = true; // generate sidetone when key down
   boolean key_down = false; // flag key down state (key down = true)
@@ -576,14 +469,16 @@ void Set_Freq(uint32_t frequency);
 	bool PB2Long = false;
 	bool PB3Short = false;
 	bool PB3Long = false;
-	
-	
-// *****************  BORROW SOME W0EB I2C ROUTINES **************************
-// Note - here I was going from Hans' method of addressing the AVR's I2C 
-// registers directly to use of the Wire library, to attempt to speed up I/O
 
-// WRITE A REGISTER NUMBER, THEN DATA BYTE *************************
-// SREG IS THE AVR STATUS REGISTER [NRK]
+	uint8_t PB1CNT = 0; // V2.1e count successive taps
+	uint8_t PB2CNT = 0;
+	uint8_t PB3CNT = 0;
+
+	unsigned long PB1TIME = 0; // V2.1e, time between successive presses
+	unsigned long PB2TIME = 0;
+	unsigned long PB3TIME = 0;
+	
+// Note: SREG is the MCU's status register ...
 
 void i2cWrite(uint8_t reg, uint8_t val) {   // write reg via i2c
     uint8_t oldSREG = SREG;
@@ -605,45 +500,45 @@ void i2cWriten(uint8_t reg, uint8_t *vals, uint8_t vcnt) {  // write array
   SREG = oldSREG;
 }
 
-// V1.15 Select relay control lines in PCF8575 based on band. I look
-// at each of the 16 bits and set outputs LOW (on) for '1' bits and
-// HIGH (off) for '0' bits
-// NOTE: V1.15 is a simplified version - it just uses hamBand_index
-// to select one pin per band
+// V2.1f NRK attempt to read from Si5351a register, specifically CLK0_PHOFF
+// I adapted this from SFRRanger_reader.ino in the examples of Wire.h
+// I had to remove the check on Wire.available() to get any output, but 
+// then I got the expected number.
+
+
+uint8_t read_register(uint8_t regstr)
+{
+	uint8_t reading;
+	uint8_t oldSREG = SREG;
+  sei();
+	Wire.beginTransmission(SI5351BX_ADDR); // transmit to device 0x60
+  Wire.write(byte(regstr));      // sets register pointer to PHOFF register
+  Wire.endTransmission();      // stop transmitting
+	SREG = oldSREG;
+
+  Wire.requestFrom(SI5351BX_ADDR, 1);    // request 1 bytes from slave device
+
+	  // step 5: receive value from device
+  if (1 ) { // if two bytes were received (removed) 2 <= Wire.available()
+    reading = Wire.read();  // receive high byte (overwrites previous reading)
+    //reading = reading << 8;    // shift high byte to be high 8 bits
+    //reading |= Wire.read(); // receive low byte as lower 8 bits
+		//Serial.print("Read from PHOFF: ");
+    //Serial.println(reading);   // print the reading
+
+
+		return reading;
+  }
+
+}
+
 
 #ifdef RELAY_CONTROL
 
 void Select_Relay(uint8_t HBindex)
 {
  
-  /*
-  uint16_t RelayWord = Relay_bits[HBindex];
-  //Serial.print("HBindex: ");
-  //Serial.println(HBindex);
-  for (uint8_t p=0; p<16; p++)
-  {
-    Serial.print("RelayWord: ");
-    Serial.println(RelayWord);
-    if(RelayWord & 0x01) // look at bit 0
-    {
-     // Serial.print("Low for p = ");
-      //Serial.println(p);
-      pcf.digitalWrite(p, LOW); //output will sink current if bit was set
-    }
-    else
-    {
-      pcf.digitalWrite(p, HIGH); // output will NOT sink current
-    }
-    RelayWord = RelayWord >> 1; // shift right to look at next bit
-   // Serial.print("RelayWord shifted: ");
-   // Serial.println(RelayWord);
-   // Serial.print("p = ");
-   // Serial.println(p);
-    //Serial.print("RelayWord and 1: ");
-   // Serial.println(RelayWord & 1);
-  }
-// while(1);
-*/
+ 
 
 // First turn all lines OFF
 
@@ -657,119 +552,142 @@ void Select_Relay(uint8_t HBindex)
  pcf.digitalWrite(Relay_lines[HBindex], LOW);
 
 }
-/*
-void testPCF()
-{
-  lcd.clear();	
-lcd.print("ALL ON");
-for (uint8_t p=0; p<16; p++)
-{ pcf.digitalWrite(p, LOW); } // turn all relay control output lines OFF
-delay(15000);
-lcd.clear();	
-lcd.print("ALL OFF");
-for (uint8_t p=0; p<16; p++)
-{ pcf.digitalWrite(p, HIGH); } // turn all relay control output lines OFF
-delay(15000);
-lcd.clear();	
-lcd.print("line 0 ON");
 
-pcf.digitalWrite(0, LOW);  // turn all relay control output lines OFF
-delay(15000);
-}
-*/
-/*
-
-// The intent of CycleBands() was to do a continuous cycling of 80 through 2 meters
-// holding each for 8 seconds. It incremented hamBand_index and called doBands().
-// Ihad to modify doBands() by making chosen = true rather than false, so it
-// wouldn't look for user input.
-void CycleBands()
-{
-  while(1)
-  {
-  for(uint8_t i=0; i<11; i++)
-  {
-    hamBand_index = i;
-    doBands();
-    Serial.print("hamBand_index = ");
-    Serial.println(hamBand_index);
-    delay(8000);
-  }
-  }
-}
-*/
 #endif
+
+
 
 // ************************  S E T U P ************************************
 
 
 
+
 void setup()
 {
+  Serial.begin(9600);
+
 	uint8_t flagValue = 0;
+
+
+
+ // Remind the user of compiler choices made, using the serial monitor
+
+
+
+  Serial.println(F("\n   *** NEW START ***")); // I put this in when the program was auto rebooting
+
+#ifdef SERIALINFO
+
+  Serial.print(F("LCD interface type: "));
+
+
+  #ifdef I2C_LCD
+  Serial.println(F("I2C"));
+  #else
+  Serial.println(F("Parallel"));
+  #endif
+  
+  Serial.print(F("Si5351a Crystal Frequency: "));
+  Serial.println(XTAL_FREQ);
+
+  Serial.print(F("IF OFFSET: "));
+  Serial.println(IF_OFFSET);
+
+  Serial.print(F("PCF8575 relay control enabled: "));
+  #ifdef RELAY_CONTROL  
+  Serial.println("YES");
+  #endif
+  #ifndef RELAY_CONTROL
+  Serial.println("NO");
+  #endif
+
+  #ifdef HW8
+  Serial.println(F("Compile for HW-8 mode: TRUE"));
+  #endif
+
+#endif
+
+  MorseField[16] = '\n'; // V2.0f, null terminate string
+  for(uint8_t ii = 0; ii < 16; ii++)
+  {
+    MorseField[ii] = ' ';
+  }
 	
-  Serial.begin(9600); // V1.15 enabled for testing
-	
-  pinMode(LEDPIN, OUTPUT); // NRK - on-board LED on Nano
+ // pinMode(LEDPIN, OUTPUT); // NRK - on-board LED on Nano V2.0g
 	pinMode(spkrpin, OUTPUT); // for speaker - beep to user
   pinMode(ENC_B, INPUT_PULLUP); // For rotary encoder
   pinMode(ENC_A, INPUT_PULLUP); // For rotary encoder
 	pinMode(SW2, INPUT_PULLUP);
 	pinMode(SW1, INPUT_PULLUP);	
-	pinMode(TX_MODE, INPUT_PULLUP); // KEY DOWN (TX) status when LOW
-	pinMode(TX_Out, OUTPUT); // echoes TX_MODE after registers updated V1.1
-	pinMode(SB_Relay, OUTPUT); // HIGH in LSB mode, LOW in USB mode
-	digitalWrite(TX_Out, HIGH); // V1.13 - Ron Taylor reported his came up
+	pinMode(Key_In, INPUT_PULLUP); // KEY DOWN (TX) status when LOW V2.0 renamed, was KeyOut
+	pinMode(TX_Out, OUTPUT); // echoes Key_In after registers updated V1.1
+	//pinMode(SB_Relay, OUTPUT); // HIGH in LSB mode, LOW in USB mode V2.0g, no more SB_Relay control
+	digitalWrite(TX_Out, keyUPstate); // V1.13 - Ron Taylor reported his came up V2.0 changed to variable state
 	                            // in Key Down mode. Make sure in Key UP
-								
-	// V1.8, I'm going to have interrupts on both encoder pin changes but both
-	// will point to the same ISR routine and IT will figure out what changed
+	pinMode(DotContact, INPUT_PULLUP); // moved these from xsetup, 2/4/2025 V2.0a
+	pinMode(DashContact, INPUT_PULLUP);				
 
-  // V1.13 - if PB1 is held in during bootup, FastStart will cause most 
-  // initial messages to be skipped for a faster startup
-
-
-  //if(digitalRead(SW1)==0) FastStart = true;
 
 	attachInterrupt (digitalPinToInterrupt (ENC_A), RotaryISR, CHANGE);  // V1.8
 	attachInterrupt (digitalPinToInterrupt (ENC_B), RotaryISR, CHANGE);  // V1.8
 	
-   //	encoder_pins = (PIND & ENC_AB_MASK)>>2; // In V1.8, pins are sifted to <1-0>
-	// 6/8/2018 avoid spurious step on start-up
 
-	// Flash the Arduino's LED a couple times to show S/U
-	
-	digitalWrite(LEDPIN, HIGH);
-	delay(100);
-	digitalWrite(LEDPIN, LOW);
-	delay(100);
-	digitalWrite(LEDPIN, HIGH);
-	delay(100);
-	digitalWrite(LEDPIN, LOW);
-	
+
+  	speed = WPM;
+		// morseSetup calcs ditlen and dahlen
+	   	morseSetSpeed(); 
+
+// V2.0a, moved PinMode for dot/dash contacts to main program setup
+
+    delay(50);
+    Serial.print(F("Dot Contact state: "));
+    Serial.println(digitalRead(DotContact));
+    Serial.print(F("Dash Contact state: "));
+    Serial.println(digitalRead(DashContact));
+
+		analogReference(DEFAULT); // Use +5 volt Vcc for reference
+
+     #ifdef PotExists
+		
+    if(SpeedPot)
+    { 
+    Serial.print(F("ADC counts = ")); // V0.1 ********* TESTING *************
+    Serial.println(analogRead(POT_ADC)); // V0.1 ********* TESTING *************
+		readSpeedPot(); 
+		Serial.print("SPEED: ");
+		Serial.println(speed, DEC);
+    }
+		speed_old = speed;
+		
+    #endif
+
+
+
+
+
+//#ifndef I2C_LCD // V1.12- for parallel interface
+ // pins4LCD(); // v2.0b 1ST TIME DON'T CHECK FLAG, JUST SET UP FOR LCD PARALLEL
+	lcd.display(); // turn on display
+
+//#endif
+
 	// Set up the LCD's number of columns and rows 
+ // V2.0y moved below to follow pins4LCD
 	lcd.begin(16,2); 
 
-#if !defined(I2C_LCD) // V1.12
-	lcd.display(); // turn on display
-#endif
-
-#if defined(I2C_LCD)//V1.12
+#ifdef I2C_LCD//V1.12 - for I2C interface
 	lcd.backlight();
 #endif
-/*
-if(FastStart)
-{
-  lcd.print("Fast Start");
-  delay(700);
-}
-else
-{
-  */
+
+  //#ifndef I2C_LCD // if parallel interface
+  //if(!LCDmode) pins4LCD(); // make pins outputs for LCD
+  
+  //#endif
+
 	lcd.setCursor(0,LCDBottomLine);
 	lcd.print(" Si5351a Quad"); // display version number on the LCD
 	lcd.setCursor(0,LCDTopLine);
-	lcd.print(" WA5BDU V1.19"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
+	lcd.print(" WA5BDU V2.2"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
 	                           // V1.7 4/28/2022 V1.8 1/12/2023 V1.9 1/24/2023
                              // V1.10 4/16/2023
 							 // V1.11 8/4/2023
@@ -781,41 +699,36 @@ else
                // V1.17 12/10/2024
                // V1.18 12/12/2024
                // V1.19 1/8/2025
+               // V1.20x 1/23/2025, x means interim revision
+               // V1.20 1/24/2025 finished V1.20
+               // V2.0 1/20/2025 adding keyer
+               // V2.1 2/14/2025 adding HW8 version
+							 // V2.2 4/11/2025 fixed some bugs and did fine-tuning 
+                
 
 	delay(2500);
 	lcd.clear();
 	
 
-//}
-// USERS: If you for some reason need to re-initialize the EEPROM data,
-// uncomment the lines below, compile the program and send to the 
-// Arduino, then come back to the source code, put the comment marks
-// (/-star and star-/) back in and compile and send to the Arduino 
-// again.
-// An easier method would be to select the SAVE STATE option from the
-// menu.
+  if(digitalRead(SW1) && !digitalRead(SW2)) // PB2 alone
+  {
+    SkipEEread = true; // true means don't read EEPROM data
+    Serial.println(F("\nDon't read EEPROM data"));
+    lcd.print(F("Skip EEPROM"));
+    //PB2Long = false;
+    while(!digitalRead(SW1) || !digitalRead(SW2)); // Stay until both released
+  }
 
 
-	//A one-time startup write to re-initialize EEPROM information:
-	/*
-	FoutTX = 7025000;
-  QUAD = true;
-  TX_CLK2 = false;
-  CLK0_1_OFF_KYDN = false;
-  TRIM = true;
-  DIV_FACTOR = 7;
-  X4 = false;
-	doSave(); // One time to initialize
-*/
 	
 // Below, read in EEPROM values from last session, if any have been saved
 // Otherwise, use default values:	
 
 	EE_flagValue = EEPROM.read(EE_flag);
-
-    if (EE_flagValue == 170)
+ 
+    if (EE_flagValue == 170 && !SkipEEread)
     {
-    lcd.print("Reading EEPROM"); // V1.19
+    if(!FastStart) lcd.print(F("Reading EEPROM")); // V1.19
     EEPROM.get(EE_FoutTX, FoutTX);
     hamBand_index = EEPROM.read(EE_hamBand_index);
     step_index = EEPROM.read(EE_step_index);
@@ -830,27 +743,149 @@ else
     EEPROM.get(EE_DIV_FACTOR, DIV_FACTOR);
     EEPROM.get(EE_X4, X4);
     EEPROM.get(EE_TX_ONLY, TX_ONLY); // V1.19
+    EEPROM.get(EE_keyDNstate, keyDNstate); // V2.0 additions (3)
+    //EEPROM.get(EE_SpeedPot, SpeedPot); // V2.0z I don't want this to carry over
+    EEPROM.get(EE_ModeA, ModeA);
+    DidReadEE = true; // V2.0 - later on I need to know this
+    }
+
+    //Serial.print("FoutTX from EEPROM: ");
+    //Serial.println(FoutTX);
+
+    // Below - bandaid fix for finding boolean values of 255 and 254 for TX_ONLY
+    // trying to print them to the Serial monitor.
+
+    // V2.1d, change test from > 1 to > 0 for true/false distinction
+
+    if((uint8_t) TX_ONLY > 0) TX_ONLY = true; // V1.20x here and below - V2.1d, no > 0
+    else {TX_ONLY = false;}
+
+    keyUPstate = !keyDNstate;
+
+// After reading EEPROM data, report more status info via Serial Monitor:
+
+  //Serial.println("After loading EEPROM values ...");
+
+  #if 1
+
+  Serial.print(F("Sidetone: "));
+  if(sidetone) 
+  {Serial.println(F("ENABLED"));}
+  else Serial.println(F("DISABLED"));
+
+  Serial.print(F("CW sidetone pitch: "));
+  Serial.println(CW_pitch);
+  Serial.print(F("TX out on CLK2? "));
+  if(TX_CLK2){Serial.println("YES");}
+  else {Serial.println("NO");}
+
+	Serial.print(F("Rotary encoder division: "));
+  Serial.println(DIV_FACTOR);
+
+  Serial.print(F("\"TX ONLY\" MODE? "));
+  if(TX_ONLY){Serial.println("YES");}
+  else {Serial.println("NO");}
+
+  Serial.print("Quadrature mode? ");
+  if(QUAD){Serial.println("YES");}
+  else {Serial.println("NO");} 
+
+  Serial.print(F("TX OUT line Key-Down state? "));
+  if(keyDNstate) Serial.println("HIGH"); // For non-zero it's HIGH, for zero: LOW
+  else Serial.println("LOW");
+
+   Serial.print(F("Output freq X4? "));
+  if(X4){Serial.println("YES");}
+  else {Serial.println("NO");} 
+
+  Serial.print(F("Keyer Mode: "));
+  if(ModeA) {Serial.println("A\n\n");}
+  else Serial.println("B\n\n");
+
+	Serial.print(F("Trim non-sig digits: "));
+	if(TRIM) Serial.print(F("YES"));
+	else Serial.println(F("NO"));
+
+	Serial.print(F("LSB/USB: "));
+	if(LSBMode) Serial.println(F("LSB"));
+	else Serial.println(F("USB"));
+
+	Serial.print(F("Phone/CW: "));
+	if(modeCW) Serial.println(F("CW"));
+	else Serial.println(F("Phone"));
+
+	Serial.print(F("Frequency:  "));
+	Serial.println(FoutTX);
+
+#endif
 
     delay(1000); // V1.19
     lcd.clear();    
-    }
-    else
-    {	
-	
-		FoutTX = Bands[hamBand_index];
+    
+   // V2.1 - below I'm fixing a problem where the stored frequency was not being used
+   // but instead the band table was used.  Assuming EE had been read.
 
-    }   
+		if(!DidReadEE) FoutTX = Bands[hamBand_index]; // Only use if EE was not read V2.1
+                                                  // otherwise FoutTX came from EEPROM
+
+  // Next, if in HW8 mode, I want to use the stored FoutTX if it was ready from EEPROM
+  // so I'll use it to back-calculate HW8DialTX. Otherwise go with hard-coded value
+  // But first I make sure it fits the HW8 0 to 500 kHz expanded range
+
+    #ifdef HW8
+ 
+    if(DidReadEE)
+    {
+      if(FoutTX >= 8395000 && FoutTX <= 8895000)
+      {
+      HW8DialTX = HW8FQtoDial(FoutTX);
+      HW8DialRX = HW8DialTX;
+      }
+      else FoutTX = HW8DialtoFQ(HW8DialTX);   // if hard coded Dial was used 
+    }
+
+    #endif
+
+   
+  /*
+    V2.1b - I need one more correction. Suppose I was in the HW-8 mode and saved
+    FoutTX in the ~8.4 MHz range. Later, I'm NOT in the HW-8 mode and I read that
+    frequency from EEPROM. In that case I need to look up a starting frequency
+    based on the hamBand_index.
+  */ 
+
+
+  #ifndef HW8
+   if(FoutTX >= 8395000 && FoutTX <= 8895000)
+   {
+    FoutTX = Bands[hamBand_index];
+   }	
+   #endif
+
+	FoutRX = FoutTX; // initialize
 	
-		FoutRX = FoutTX; // initialize
-	
- if(!digitalRead(SW1) || !digitalRead(SW2)) // IF a button is held closed during S/U, do Verbose
+//if(GetButtons)
+
+ if(!digitalRead(SW1) && !digitalRead(SW2)) // IF a SW1 & 2 held closed during S/U, do Verbose
+ //if(PB3Long)
 	{
 		Verbose = true; // V1.14
+    FastStart = false; // no fast start when Verbose is desired
     lcd.print( "VERBOSE");
     delay(200);
     while(!digitalRead(SW1) || !digitalRead(SW2)); // Stay until both released
+   // PB3Long = false;
 	} 
+  /* 2.0c move to before EEPROM read
 
+  else if(digitalRead(SW1) && !digitalRead(SW2)) // PB2 alone
+  {
+    SkipEEread = true; // true means don't read EEPROM data
+    Serial.println("Don't read EEPROM data");
+    //PB2Long = false;
+    while(!digitalRead(SW1) || !digitalRead(SW2)); // Stay until both released
+  }
+*/
 	instructions(); // give user brief options V1.4 moved to after EEPROM read
                  // continues to verbose info if Verbose is true
 
@@ -882,21 +917,26 @@ else
 
   if(TX_ONLY)
   {
-    CLK0_1_OFF_KYDN = false;
-    TX_CLK2 = false;
-    VFO_Rx_Tx = 0;// NOT RIT mode
-    CW_pitch = 0;
-      key_down = false;
-      if(!digitalRead(TX_MODE))
+    SetUp_TX_ONLY(); // V1.21
+      key_down = false; // start with assumption
+      if(!digitalRead(Key_In)) // then read the input
     {
+      // V2.0 - let new routine handle this stuff:
+      /*
       key_down = true;
       clock_0_ON();
       if(QUAD) clock_1_ON();
+      */
+      KeyDownActions(); // This will set the key_down flag
     }
     if(!key_down)
     {
+        // V2.0 - let new routine handle this stuff:
+      /*    
       clock_0_OFF();
       if(QUAD) clock_1_OFF();
+      */
+      KeyUpActions();
     }
   }
   // V1.19 assume key is UP so don't turn on CLK0/1 if in TX_ONLY mode:
@@ -905,8 +945,31 @@ else
 	clock_0_ON(); // same	
 	if (QUAD) clock_1_ON(); // same V1.12, turn on only if QUAD is true
   }
-	Print_freq(FoutTX, LCDTopLine);	
-	
+
+/*
+	Serial.println("Reached line 914");
+	while(1)
+	{
+	while(!GetButtons());
+	LSBMode = !LSBMode; // Calling code does the swap
+	doLSB_USB();
+	Serial.print("SB Mode: ");
+	if(LSBMode) Serial.println("LOWER");
+	else Serial.println("UPPER");
+	delay(250);
+	}
+*/
+
+/*
+  #ifdef HW8
+	Print_freq(HW8DialTX, LCDTopLine);	
+  #else 
+  Print_freq(FoutTX, LCDTopLine);
+  Serial.print("FoutTX line 843: ");
+  Serial.println(FoutTX);
+	#endif
+*/
+
 	encoder_pins = (PINC & ENC_AB_MASK)>>2;  // In V1.8, pins are sifted to <1-0>
 	// 6/8/2018 avoid spurious step on start-up
 
@@ -924,110 +987,67 @@ else
     clock_2_OFF();
   }
   
-// USERS:
-// I enable the serial command below when I want the program to report info
-// to me via the serial monitor. You may wish to do the same.
-	
-//	Serial.begin(9600); // for troubleshooting ****** TESTING ***********
 
-	// while(1) testButtons();
-	
-// Test my new routines which calculate RX & TX registers separately, and send
-// them to the chip separately.
-
-/*
-	calc_RX(7020000);
-	send_regs_RX();
-	delay(2000);
-	calc_TX(7019500);
-	send_regs_TX();
-	delay(1000);
-	send_regs_RX();
-	delay(1000);
-*/
-
-
-// Below is a test to see how much time it takes to change Fout and update
-// the LCD. Also, without the display update.
-// It took 1323 ms, so one step takes 13.23 ms. 
-// Time for one step without LCD update is 9.4 ms.
-// I changed the method of I2C communications from direct manipulation of
-// the hardware registers to use of the "Wire" library to try to speed it
-// up but it only reduced the time for an update to 8.3 ms.
-
-// Next,I'll alter the routine so it doesn't calculate the registers, it
-// just sends them 100 times ...
-
-// That didn't help much, 8.19 ms per update. So all the time seems to be
-// in the TWI operations
-
-// OK, I used the Wire.setClock() function to raise my TWI clock to 400,000 Hz
-// and that got me down to 2.8 ms per frequency upload.
-
-/*	
-	Serial.begin(9600);
-	
-	delay(2000); // user time to turn on serial monitor
-	
-	timing_start = millis();
-	for(uint8_t ii = 100; ii > 0; ii--)
-	{
-		//Fout += 10;
-		send_regs_TX();
-		// Print_freq(Fout, LCDTopLine);
-		
-	}
-	Serial.print("Time in ms for 100 steps: ");
-	Serial.println(millis() - timing_start);	
-	
-	*/
-	
-	// USERS: un-comment the line below to enable a routine that cycles
-	// through the four output level states, 2, 4, 6 and 8 mA. The routine
-	// is entered on startup. Go to the next level by pressing a button.
-	// After the 4th level, normal operation resumes.  9/20/2020
-	// Note that the normal level used is the highest, 8 mA.
-	
-	// do_levels(); // 9/13/2020 - experiment with levels settings
-
-
-// V1.15
-
-/* USERS: You can define or undefine RELAY_CONTROL in the file "Si5351a_quad_config.h"
-  depending on whether you want to compile the code to control a PCF8575 IC
-  */
 
 
 #ifdef RELAY_CONTROL
 
-  // Below, post serial message if PCF not found, but I won't  trap all
-  //other calls to it, so it needs to be fixed or RELAY_CONTROL undefined
+ // V2.1b 2/19/2025 changing address below from 0x20 to constant PCF8575_I2C_ADR
+ // which will be defined as 0x20 in the header file, for easier user access
 
- // if (!pcf.begin(0x20, &Wire)) {
- //   Serial.println("Couldn't find PCF8575");
- // }
- // else
- // {
-  /*
-     // Serial.println("PCF8575 comm OK");
-     lcd.clear();
-     lcd.setCursor(0,0);
-     lcd.print("PCF8575 conn.");
-     pcf.begin(0x20, &Wire);
-     delay(2000);
-      for (uint8_t p=0; p<16; p++) 
-   { pcf.pinMode(p, OUTPUT);}
-
-  // for (uint8_t p=0; p<16; p++)
-  // { pcf.digitalWrite(p, HIGH); } // turn all relay control output lines OFF
-  */
-  pcf.begin(0x20, &Wire);
+  pcf.begin(PCF8575_I2C_ADR, &Wire);
   Select_Relay(hamBand_index);
   #endif
 
+//Serial.print(" End of SETUP, TX_ONLY ="); // XXXOUT
+//Serial.println(TX_ONLY);
+if(CW_pitch > 200) CW_pitch_ST = CW_pitch; // V2.0, would like pitches to be the same
 
+// SendTestText(); // V2.0 *********  TESTING ****************
+
+// V2.0 moving CW "TU" from keyer section to here, so S/U will be complete when heard
+
+    DoTransmitOld = DoTransmit;
+		DoTransmit = false;
+		morseSendString("TU");
+		DoTransmit = DoTransmitOld;
+
+
+loopCounter = 1; // ****** TESTING ********
+timing_start = millis();
+
+// Going back to paddle mode at end of setup()
+
+//#ifndef I2C_LCD // if parallel mode
+ // pins4paddle();
+//#endif
+#ifdef HW8
+FoutTX = HW8DialtoFQ(HW8DialTX); // ***************  THESE TWO LINES FOR TESTING *******
+FoutRX = FoutTX;
+#endif
+
+//////if(FoutTX == 0 || FoutRX == 0) Serial.println("Fout zero at end of setup.");
+//Serial.println(FoutTX);
+//Serial.println(FoutRX);
+
+UpdateScreen(); // V2.1 I found screen not complete after startup.
+
+// TESTING ********** DOES CLOCK 2 OFF WORK?
+
+/*
+while(!GetButtons())
+{
+	clock_2_ON();
+	clock_0_ON();
+	delay(4000);
+	clock_2_OFF();
+	clock_0_OFF();
+	delay(4000);
 
 }
+*/
+
+} //  ******************* END OF S E T U P **********************************
 
 
 
@@ -1036,32 +1056,25 @@ else
 
 void loop()
 {
-uint16_t loopCounter; // for testing/timing main loop
-// testPCF(); // v1.15 for testing
 
-// CycleBands(); // *** TESTING ***
-/*
- * Main loop needs to do these things:
- * 
- * 1) Check for rotary encoder change and respond if any
- * 2) check switches for user input and call routine indicated
- * 3) Check for key-down line and shift output freq if necessary
- *
- */
-    //delay(2000);
-   // measure_time();
-    //delay(10000)
+if(LCDtrash) // If display needs fixing ... V2.1e
+{
+	if(millis()-LCDFixTime > 2000)
+	{
+		UpdateScreen();
+		LCDtrash = false;
+	}
+
+}
 
 
-    // First check the encoder pins.  To debounce, if they have changed, wait
-    // specified ms and then read pins again and re-check.  If still changed,
-    // do the Rotary function
-	
-	// V1.8 - don't think I need this forever 'while' - loop() is forever.
-	
-	// If abs(queue) gets larger than 10, step is increased or decreased
-	// depending on the sign. The larger step is taken, queue is reduced by
-	// 10, and the step size is retured to previous value.
+
+xloop(); // V2.0 loop from keyer
+
+
+
+// Below, I see if the encoder ISR has accumulated any steps that
+// need to be taken. First steps up, then steps down ...
 
 	if(queue != 0)
 	{		
@@ -1100,100 +1113,42 @@ uint16_t loopCounter; // for testing/timing main loop
 		}
 		
 		// V1.1 here we are sure in key up mode, so send out the RX registers
+		// Note, we are still the section where queue was != 0
 		// This is after stepping in response to encoder movement:
 			
-		   send_regs_RX();					   
+		   send_regs_RX();
+       #ifndef HW8					   
 		   Print_freq(FoutRX, LCDTopLine);
-		   
+       #else
+		   Print_freq(HW8DialRX, LCDTopLine);
+       #endif
 	}
 
 	
 // Now check for key down condition
 // In V1.16, I make sure that the "key up" actions only occur the one time
-// that the keyed line has returned to open
+// that the keyed line has returned to open. Note that this only occurs
+// for the manual key input. Paddle generated key down periods must 
+// control their own timing.
 
 
-  if(!digitalRead(TX_MODE))
+  if(!digitalRead(Key_In))
   {
-    key_down = true;
-
-     clock_0_ON(); // V1.19
-     if(QUAD) clock_1_ON(); // V1.19
-
-			// key_down = true; // V1.16
-			digitalWrite(LEDPIN, HIGH);
-			send_regs_TX(); // change output frequency 
-			digitalWrite(TX_Out, LOW); // echo keyed line AFTER registers updated
-			
-			if(sidetone) tone(spkrpin, CW_pitch_ST); // V1.3 create sidetone when key down V1.19 add _ST
-
-			// V1.12 If using CLK2, turn off RX output to CLK0 and 1
-			// during key down if flag is true
-			
-			if(TX_CLK2 && CLK0_1_OFF_KYDN)
-			{
-			si5351aOutputOff(SI_CLK0_CONTROL);
-			si5351aOutputOff(SI_CLK1_CONTROL);
-			}
-			if(TX_CLK2) clock_2_ON(); // V1.12
-			
-			while(!digitalRead(TX_MODE)); // stay here until key returns to up
+    KeyDownActions(); // V2.0 moving these actions to a function
+    
+			while(!digitalRead(Key_In)); // stay here until key returns to up
 		
 // Below actions take place after key goes back UP
-			
-			key_down = false; // V1.4
-			digitalWrite(LEDPIN, LOW);
-			digitalWrite(TX_Out, HIGH); // raise keyed line BEFORE regs sent
-			send_regs_RX(); // change output frequency 
-			noTone(spkrpin); // turn off sidetone
-			
-      if(TX_ONLY)
-      {
-      clock_0_OFF(); // V1.19
-      if(QUAD) clock_1_OFF(); // V1.19
-      }
+			KeyUpActions(); 
 
-  // } // V1.16 move brace to V1.17 marker below ...
+  } 
 
-			if(TX_CLK2) si5351aOutputOff(SI_CLK2_CONTROL); // V1.12 turn clock 2 off
-			
-			// V1.12 - NOW, if CLK2 is in use and CLK0 was turned off during key down
-			// turn it back on. Then, if CLK1 is not turned off by QUAD = false, then
-			// turn it back on too.
-			
-			if(TX_CLK2 && CLK0_1_OFF_KYDN)
-			{
-				clock_0_ON();
-				if(QUAD) clock_1_ON();
-			}
-
-  } // V1.17 above two actions should only happen when key goes up
-
-// V1.12 - I'm not sure I like the idea of contact bounce delay, 
-// but I moved it to the end of the routine so it wouldn't delay 
-// actions. Users who do not use mechanical keys may want to change 
-// to 1 ms or eliminate it.
-			
-			delay(2); // 2 ms of contact bounce wait ...				
-				
-
-
-        // Toggle LED every 20000 times through loop to show Arduino is
-        // alive
-
-        if(loopCounter++ > 50000)
-        {
-            loopCounter = 0;
-            digitalWrite(LEDPIN, !digitalRead(LEDPIN));      
-			// 6/82018 - TURN OFF DISTRACTING LED FOR NOW
-			// I THINK MY LOOP TIME IS ABOUT 6 uS
-        }
-        
 
         if (GetButtons())
         {
  
-
+        if(!KeyerActive) // V2.0 when keyer is active, buttons have different functions
+        {
         if(PB3Long) // main menu
 			{
 				menu(); 
@@ -1240,7 +1195,7 @@ uint16_t loopCounter; // for testing/timing main loop
           spot_it();
           goto _DidClear;
         }
-				if(VFO_Rx_Tx == 0)RIT_ON();	
+				if(VFO_Rx_Tx == 0) RIT_ON();	
 				
 				// Below I'm adding a check for a "double tap" on PB1 when RIT
 				// is ON, which will result in clearing the offset, not 
@@ -1256,7 +1211,11 @@ uint16_t loopCounter; // for testing/timing main loop
 						SingleBeep();
 						FoutRX = FoutTX; // eliminate offset
 						Go_RIT();
-						Print_freq(FoutTX, 0);
+       #ifndef HW8					   
+		   Print_freq(FoutTX, LCDTopLine);
+       #else
+		   Print_freq(HW8DialTX, LCDTopLine);
+       #endif
 						while(digitalRead(SW1) == 0);// stay until PB released
 						goto _DidClear;
 						}
@@ -1282,23 +1241,75 @@ uint16_t loopCounter; // for testing/timing main loop
 				PB3Short = false;
 			}
         
-    }		
-}
+    }	// Below, button usage when keyer is active V2.0 Here, end of !KeyerActive
+    else {
+   
+    
+    if(PB1Short)
+      {
+      morseSendString(msg1);
+      timing_keyer = millis(); // V2.0a - give extra time after message sends
+															// refers to the 3 seconds to stay in KYR mode
+			//SPRINT_inhibits(); // ************ TESTING ***********************
+      PB1Short = false;
+      }     
 
+      else if(PB2Short)
+      {
+      morseSendString(msg2);
+      timing_keyer = millis(); // V2.0a - give extra time after message sends
+      PB2Short = false;
+      }
+      
+      else if(PB3Short)
+       {
+      morseSendString(msg3);
+      timing_keyer = millis(); // V2.0a - give extra time after message sends
+      PB3Short = false;
+      }  
+      
+        }   // End of 'else' for KeyerActive is true
+    } // End of GetButtons();
+/*
+  #ifdef HW8
+  if(!Did_Once)
+  {
+    DoPrintHW8();
+    Did_Once = true;
+  }
+  #endif
+*/
 
+} //  *********** end of loop() function  **************************** ENDOFLOOP
 
-// ******************** END OF L O O P FUNCTION **************************
+/*
+  #ifdef HW8
+  void DoPrintHW8()
+  {
+    Serial.print("HW8DialRX: ");
+    Serial.println(HW8DialRX);
+    Serial.print("FoutRX: ");
+    Serial.println(FoutRX);
+    Serial.print("FoutTX: ");
+    Serial.println(FoutTX);   
+    Serial.print("From HW8DialtoFQ: ");
+    Serial.println(HW8DialtoFQ(HW8DialTX));
+   // Serial.print("Step Size: ");
+    //Serial.println(TuningStepSize[step_index]);
+    //Serial.print("Step Index: ");
+    //Serial.println(step_index); 
+    Did_Once = true;   
+  }
+  #endif
 
-
-
-// Menu is entered when the user Holds PB3. LCD shows current choice
-// & user can rotate the knob to cycle through choices. Pressing PB3
-// takes the current choice, which goes to its sub-menu of choices.
-
-// There are now 7 choices, 0 through 6
+*/
 
 	void menu()
 	{
+//#ifndef I2C_LCD // if parallel mode
+  ////if(!LCDmode) pins4LCD();
+//#endif
+
         lcd.clear();
         lcd.print("MENU");
         lcd.setCursor(0,1);
@@ -1348,7 +1359,7 @@ uint16_t loopCounter; // for testing/timing main loop
 		else if (Menu_item == 1) doPitch();
 		else if (Menu_item == 2) doCWPhone();
 
-        else if (Menu_item == 3) doSave();
+    else if (Menu_item == 3) doSave();
 		else if (Menu_item == 4)
 		{
 			if(sidetone)
@@ -1431,6 +1442,9 @@ void showChoice()
 // to see if a PB3Short even has happened. If so, the current item is
 // selected and the routine is called. If not, loop back to the top.
 
+// V2.0 increase number of menu choices to 8 so I can add "send test text"
+// to the list
+
 
 		{   
         r_dir = low_rez(); // get UP, DOWN, or NONE from rotary encoder
@@ -1438,12 +1452,12 @@ void showChoice()
         {
       if (r_dir == 1)
       {
-      Menu_itemA++; //  0, 1, 2, 3, 4, 5, 6, 7 are valid
+      Menu_itemA++; //  0, 1, 2, 3, 4, 5, 6, 7, 8 are valid
       if (Menu_itemA > 7) Menu_itemA = 0; // V1.19 was > 6
       }
       else if(r_dir == 2)
       {
-        if(Menu_itemA == 0) Menu_itemA = 7; // V1.19 was 6
+        if(Menu_itemA == 0) Menu_itemA = 8; // V2.0,  was 7
         else Menu_itemA--;
     	}
     
@@ -1470,17 +1484,40 @@ void showChoice()
     {
       QUAD = !QUAD;
       showChoiceA();
+			// V2.1e - Found that Quadrature? choice not being enforced ...
+			if(QUAD)
+			{ 
+				if(LSBMode) CLK1_hi = 0x4F; // V2.1e
+				else CLK1_hi = 0x5F;
+
+				//clock_1_ON();
+				CLK0_1_on_quad(); // V2.1f this and next sort of bandaid to restore quadrature
+				reset_PLL_A();   // after not-quadrature ends
+				//doLSB_USB(); // V2.1e this is a bandaid. I found phase messed up after
+				//delay(100); // turning Quadrature off and back on
+				//doLSB_USB();
+			}
+			else clock_1_OFF();
+
       delay(1000);
+
     }
 		else if (Menu_itemA == 1)
         {
       TX_CLK2 = !TX_CLK2;
+      if(TX_CLK2) 
+      {
+        TX_ONLY = false; // V1.20 - can't have both on
+        if(CW_pitch == 0) CW_pitch = CW_pitch_ST; // V1.20 restore if suspected off from TX_ONLY
+      }
+			else CLK0_1_OFF_KYDN = false; // V2.1f, make false when TX_CLK2 is turned off
       showChoiceA();
       delay(1000);
     }
 		else if (Menu_itemA == 2)
         {
       CLK0_1_OFF_KYDN = !CLK0_1_OFF_KYDN;
+      if(!TX_CLK2) CLK0_1_OFF_KYDN = false; // V2.0 can be true only of TX_CLK2 is true
       showChoiceA();
       delay(1000);
     }
@@ -1501,20 +1538,54 @@ void showChoice()
       else if (Menu_itemA == 6) // V1.19 added this block
       {
         TX_ONLY = !TX_ONLY;
+        SetUp_TX_ONLY(); // V1.21
         showChoiceA();
+       // Serial.print(" Choice 6, 1507, TX_ONLY = "); // XXXOUT
+       // Serial.println(TX_ONLY);
+
         delay(1000);
       }
+      else if (Menu_itemA == 7)
+      {
+        // First I want to make sure VFO is in one of the two modes that keys
+        // the output, either TX_CLK2 or TX_ONLY. First see if TX_CLK2 is
+        // current mode. If not, check TX_ONLY mode and if it's also not,
+        // then make it the current mode
 
-		//else if (Menu_itemA == 6) doAdvanced(); // V1.14 
-    // item '7' falls through, resulting in EXIT
-	
-	}
+      if(!TX_CLK2)
+      {
+				TX_ONLY_OLD = TX_ONLY; // V2.1e save to restore mode if not TX_ONLY
+        if(!TX_ONLY)
+        {
+          TX_ONLY = true;
+          SetUp_TX_ONLY();
+        }
+      }   
+			SideToneOld = sidetone;
+          testText = true; // V2.0h, use to inhibit TX key closure
+          sidetone = false; // V2.0h, no sidetone please
+          SendTestText();
+	// Now we're finished with the send text function
+					TX_ONLY = TX_ONLY_OLD; // V2
+          UpdateScreen(); // fix LCD screen
+					if(!TX_ONLY) SetUp_TX_ONLY(); // Note: SetUp also has some stuff for exiting mode V2.1e
+          sidetone = SideToneOld;
+          testText = false;
+					CLK0_1_on_quad(); // V2.1f this and next sort of bandaid to restore quadrature
+				  reset_PLL_A();   // after sendTestText ends
+      }
 
-// Show Advanced menu currently selected item:
-// Show the name of the parameter and its current value
+	} // end of DoAdvanced() function	
 
 void showChoiceA()
 	{
+//#ifndef I2C_LCD // if parallel mode
+  //if(!LCDmode) pins4LCD();
+//#endif
+
+   // Serial.print(" showChoiceA entry, TX_ONLY ="); // XXXOUT
+   // Serial.println(TX_ONLY);  
+
 		lcd.clear();
 		lcd.setCursor(0,0);
 		if (Menu_itemA == 0)
@@ -1606,24 +1677,23 @@ void showChoiceA()
               lcd.print(" false");
             } 
           }  
-			
-		else if (Menu_itemA == 7)  // V1.14 was 5 V1.19 was 6
+    else if (Menu_itemA == 7)
+    {
+      lcd.print("Send CW Test TXT");
+    }				
+
+		else if (Menu_itemA == 8)  // V1.14 was 5 V1.19 was 6
         {
             lcd.print("EXIT");
-        }				
+        }
+			
 	}
 
   
   
   void doDivFac()
   {
-    /*
-    Here I look for encoder counts and adjust DIV_FACTOR up or down in
-    response to them. Then update the LCD with each change. Keep within
-    1 and 255. It's a uint8_t, so I just have to avoid 0.
-    Outsie this loop, look for any press of a PB, which will accept the
-    current value and terminate this routine.
-    */
+  
 
    while(!GetButtons())
 		{   
@@ -1694,22 +1764,25 @@ void showChoiceA()
 	
 	    }
 	}
-	
+
+
 	void showStepSize()
 	{
+	//#ifndef I2C_LCD // if parallel mode
+ // if(!LCDmode) pins4LCD();
+//#endif
+
 		clearLine1();
 		lcd.print(TuningStepSize[step_index]);	
 	}
 
-// 3/18/2021 - V1.6 Ian, G3VAJ reported that the band selection rollover on
-// both above 2 meters and below 80 meters first goes to an invalid frequency
-// and if you continue, to the correct one. I had my hamBand_index
-// variable maximum at 11 and it should be 10 (11 items, 0 through 10)
-
-
 	void doBands()
 	{
-	
+	#ifdef HW8
+  bad_sound();
+  goto quitdoBands;
+  #endif
+
 		boolean chosen = false; 
 		char index_now = hamBand_index; // so can see if we change bands
 		showBand();
@@ -1763,14 +1836,20 @@ void showChoiceA()
 		RITSave = 0; // V1.7 prevent going to old offset after changing bands
 		
 		lcd.clear();
-		Print_freq(FoutTX, LCDTopLine);
+
+       #ifndef HW8					   
+		   Print_freq(FoutTX, LCDTopLine);
+       #else
+		   Print_freq(HW8DialTX, LCDTopLine);
+       #endif
 
 // V1.15, if PCF8575 is in use, set the output lines to match the band
 // *bk4
 #ifdef RELAY_CONTROL
   Select_Relay(hamBand_index);
   #endif 
-  }
+  quitdoBands:;
+  } // end of doBands 
 
 	
 
@@ -1789,13 +1868,14 @@ void showChoiceA()
     void doSave()
     {
 
-        EEPROM.put(EE_FoutTX, FoutTX);
+        EEPROM.put(EE_FoutTX, FoutRX); // V2.1 I now save FoutRX instead of FoutTX
         EEPROM.put(EE_hamBand_index, hamBand_index);
         EEPROM.put(EE_step_index, step_index);
     //    EEPROM.put(EE_mode, quad);
         EEPROM.update(EE_flag, 170); // save specific # 0b10101010 to show EPROM written
 		EEPROM.put(EE_LSBMode, LSBMode); 
 		EEPROM.put(EE_modeCW, modeCW); 
+    if(!TX_ONLY) // V1.20 - I don't want to save that temporary 0 Hz pitch
 		EEPROM.put(EE_CW_pitch, CW_pitch); 
 		EEPROM.put(EE_sidetone, sidetone); // boolean value
     EEPROM.put(EE_QUAD, QUAD); // These six added V1.14
@@ -1805,6 +1885,10 @@ void showChoiceA()
     EEPROM.put(EE_DIV_FACTOR, DIV_FACTOR);
 		EEPROM.put(EE_X4, X4);
     EEPROM.put(EE_TX_ONLY, TX_ONLY); // V1.19
+    EEPROM.put(EE_keyDNstate, keyDNstate); // V2.0 additions (3)
+    EEPROM.put(EE_SpeedPot, SpeedPot);
+    EEPROM.put(EE_ModeA, ModeA);
+		
 
      // To tell the user that EEPROM has been written, I'll do two
 		// beeps, at 400 Hz and then 500 Hz.
@@ -1849,8 +1933,20 @@ void showChoiceA()
 
 	void instructions()
 	{
+    if(!FastStart) // V2.0 do fast start, if Verbose, don't do fast start
+    {
+  //#ifndef I2C_LCD // if parallel mode
+  //if(!LCDmode) pins4LCD();
+  //#endif
     uint16_t ExtraTime = 0; // V1.19
     if(Verbose) ExtraTime = 1000;
+
+    #ifdef HW8
+    lcd.clear();
+    lcd.print("HW-8 Mode");
+    delay(1000);
+    #endif
+
 		lcd.clear();
 		lcd.print("PB3 HOLD");
 		lcd.setCursor(0, LCDBottomLine);
@@ -1864,7 +1960,7 @@ void showChoiceA()
 		
 		// V1.8, add startup display of encoder speed
 		lcd.clear();
-
+    }
     if(Verbose)
     {
 		lcd.print("Encoder: 1:");
@@ -1924,19 +2020,69 @@ void showChoiceA()
 		lcd.print("F_OUT is X1");
 	}
   delay(2500);			
-	}
+	
+  lcd.clear(); // Adding V2.0 keyer info
+  lcd.print("Keyer Speed:");
+  lcd.print(speed);
+  delay(2500);
+
+  lcd.clear();
+  lcd.print("Keyer mode: ");
+  if(ModeA) lcd.print('A');
+	else lcd.print('B');
+  delay(2500);
+
+  lcd.clear();
+  lcd.print("Speed Pot? ");
+  #ifdef PotExists
+  lcd.print("YES"); // V2.0z
+  #else
+  lcd.print("NO");
+  #endif
+  delay(2500);
 
   }
-
+  } // end Verbose section
 	/*
   Long instructions, called from menu and scrolled with encoder
   */
-
+/*
     void long_instr()
     {
       
     }
+*/
 
+// V1.21 adds procedure below to set some flags for TX_ONLY mode
+
+    void SetUp_TX_ONLY()
+    {
+      if(TX_ONLY)
+      {
+      CLK0_1_OFF_KYDN = false; // not compatible with TX_ONLY
+      TX_CLK2 = false; // This and TX_ONLY are mutually exclusive
+      VFO_Rx_Tx = 0;// NOT RIT mode
+      CW_pitch = 0; // Make sure no offset
+      clock_2_OFF(); // V2.0
+
+    // V2.1d will turn off outputs if key is up
+    if(digitalRead(Key_In)) // key input high means key is UP (open)
+    {
+      clock_0_OFF();
+      clock_1_OFF();
+
+    }
+
+      }
+      else
+      {
+        CW_pitch = CW_pitch_ST; // This is the only thing I'll restore when leaving TX_ONLY
+        //clock_0_ON(); // No, I need to turn the outputs back on too ...
+        //if(QUAD) clock_1_ON();
+				CLK0_1_on_quad(); // V2.1f this and next sort of bandaid to restore quadrature
+				 reset_PLL_A();   // after sendTestText ends
+      }
+    }
 //
 // Set up specified PLL with mult, num and denom
 // mult is 15..90
@@ -2005,23 +2151,13 @@ i2cWrite(clk, 0x80); // Refer to SiLabs AN619 to see
 //bit values - 0x80 turns off the output stage
 }
 
-//
-// Set CLK0 output ON and to the specified frequency
-// Frequency is in the range 1MHz to 150MHz
-// Example: Set_Freq(10000000);
-// will set output CLK0 to 10MHz
-//
-// This example sets up PLL A
-// and MultiSynth 0
-// and produces the output on CLK0
-//
 
-// Display the Si5351A CLK0/1 frequency on the LCD
-// bottom line to 1 Hz resolution. Not used as of 6/8/2018
 
 	void dispfreq1()
 	{
-
+  //#ifndef I2C_LCD // if parallel mode
+  //if(!LCDmode) pins4LCD();
+  //#endif
 	  lcd.setCursor(0,LCDBottomLine);
 	  lcd.print("         "); // clear 9 spaces
 	  lcd.setCursor(0,LCDBottomLine);
@@ -2152,6 +2288,29 @@ i2cWrite(clk, 0x80); // Refer to SiLabs AN619 to see
 	}
 
 
+// V2.0i convert synth frequency to HW8 dial frequency to be displayed
+
+#ifdef HW8
+// Take VFO output frequency and convert to HW8 dial reading:
+
+uint32_t HW8FQtoDial(uint32_t actualFQ)
+{
+  uint32_t Returndial;
+ Returndial = 8895000 - actualFQ;
+  return Returndial;
+}
+
+// Take HW8 dial reading and convert to required frequency out
+
+uint32_t HW8DialtoFQ(uint32_t dialrdg)
+{
+ // uint32_t FQtoReturn;
+  return HW8FoutMax - dialrdg;
+  //return FQtoReturn;
+}
+
+#endif
+
 
 
 // ************  SEND RX REGISTERS TO Si5351a ********************************
@@ -2242,7 +2401,9 @@ i2cWrite(clk, 0x80); // Refer to SiLabs AN619 to see
 
 // V1.1 this routine will now assume it is to change the TX frequency
 
+// V2.0i, below is never called so I'm removing 2/12/2025
 
+/*
 void Set_Freq(uint32_t frequency)
 {
 	FoutTX = frequency;
@@ -2250,7 +2411,7 @@ void Set_Freq(uint32_t frequency)
 	send_regs_TX();
 }
 
-
+*/
 
 // NRK - make reset PLL a separate routine as it generates a pop when it is
 // executed.
@@ -2270,7 +2431,7 @@ void Set_Freq(uint32_t frequency)
 	{
 		// Finally switch on the CLK0 output (0x4F)
 		// and set the MultiSynth0 input to be PLL A 
-		// i2cSendRegister(SI_CLK0_CONTROL, 0x4F | SI_CLK_SRC_PLL_A); // NRKw to below
+		// i2cSendRegister(SI_CLK0_CONTROL, 0x4F | SI_CLK_SRC_PLL_A); // NRK to below
 		// Adding level control to the function 9/13/2020
 		
 		i2cWrite(SI_CLK0_CONTROL, (0x4F | SI_CLK_SRC_PLL_A) & level);
@@ -2286,30 +2447,49 @@ void Set_Freq(uint32_t frequency)
 		// sideband select routine can alternate between 0x4F (output not
 		// inverted) and 0x5F (output inverted).
 		
-		i2cWrite(SI_CLK1_CONTROL, (CLK1_hi | SI_CLK_SRC_PLL_A) & level); // NRKw
+		i2cWrite(SI_CLK1_CONTROL, (CLK1_hi | SI_CLK_SRC_PLL_A) & level); // NRK
+	}
+
+	void CLK0_1_on_quad() // V2.1f attempted sure fire on with good quad phase
+	{
+		send_regs_RX();
+		//if (QUAD) i2cWrite(CLK0_PHOFF, dividerRX);
+		clock_0_ON();
+		if(QUAD) clock_1_ON();
+		//if(!QUAD) Serial.println("QUAD is false");
+	//	Serial.print("dividerRX = ");
+	//	Serial.println(dividerRX);
+
 	}
 
 		void clock_2_ON() // V1.12 added
 	{
 		
-		i2cWrite(SI_CLK2_CONTROL, 0x4F | SI_CLK_SRC_PLL_B); // V1.5: PLL_B
+		i2cWrite(SI_CLK2_CONTROL, 0x4F | SI_CLK_SRC_PLL_B & level); // V1.5: PLL_B
 	}
 
   void clock_2_OFF() // V1.14
   {
-  si5351aOutputOff(SI_CLK2_CONTROL); // turn clock 2 off
+		i2cWrite(SI_CLK2_CONTROL, (0x4F | 0x80) | SI_CLK_SRC_PLL_B & level); // V1.5: PLL_B, V2.1f
+  //si5351aOutputOff(SI_CLK2_CONTROL); // turn clock 2 off
   }
 
 
   void clock_0_OFF() // V1.19
   {
-  si5351aOutputOff(SI_CLK0_CONTROL); // turn clock 0 off
+  //si5351aOutputOff(SI_CLK0_CONTROL); // turn clock 0 off
+	// V2.1f - turn off without changing the other bits
+
+	i2cWrite(SI_CLK0_CONTROL, (0xCF | SI_CLK_SRC_PLL_A) & level);
+
+	
   }
 
 
   void clock_1_OFF() // V1.19
   {
-  si5351aOutputOff(SI_CLK1_CONTROL); // turn clock 1 off
+  //si5351aOutputOff(SI_CLK1_CONTROL); // turn clock 1 off
+	i2cWrite(SI_CLK1_CONTROL, ((CLK1_hi | 0x80) | SI_CLK_SRC_PLL_A) & level);
   }  
 
 // *********************** STEP UP AND STEP DOWN FREQUENCY ******************
@@ -2322,13 +2502,34 @@ void Set_Freq(uint32_t frequency)
 	 {
       //uint32_t adj_step_size;
       //adj_step_size = TuningStepSize[step_index];
+
+    #ifndef HW8 // Below for NOT HW8
+
 	  FoutRX += TuningStepSize[step_index]; // always step RX
 	  calc_RX(FoutRX);
+
+    #else  // Below for HW8 YES
+
+    HW8DialRX += TuningStepSize[step_index];
+    FoutRX = HW8DialtoFQ(HW8DialRX);
+    calc_RX(FoutRX);
+    #endif
+
 	  
 	  if(!VFO_Rx_Tx) // also step TX if in synch mode
 	  {
-		  FoutTX += TuningStepSize[step_index];
-		  calc_TX(FoutTX);
+
+			#ifndef HW8
+			FoutTX += TuningStepSize[step_index]; // always step RX V2.1d uncommented this line
+			calc_TX(FoutTX);
+
+			#else // below for HW8 mode
+
+			HW8DialTX += TuningStepSize[step_index]; // V2.1f uncommented this line
+			FoutTX = HW8DialtoFQ(HW8DialTX);
+			calc_TX(FoutTX);
+			#endif
+
 	  }
 	 }
 
@@ -2336,13 +2537,32 @@ void Set_Freq(uint32_t frequency)
 	 {
       //uint32_t adj_step_size;
       //adj_step_size = TuningStepSize[step_index];
+    #ifndef HW8
       FoutRX -= TuningStepSize[step_index];
 	  calc_RX(FoutRX);
-	  
+
+	  #else // bdlow for HW8 mode
+
+    if(TuningStepSize[step_index] <= HW8DialRX) // V2.0i make sure dial doesn't go below 0
+    {HW8DialRX -= TuningStepSize[step_index];}
+    FoutRX = HW8DialtoFQ(HW8DialRX);
+    calc_RX(FoutRX);
+
+    #endif
+
 	  if(!VFO_Rx_Tx) // also step TX if in synch mode
 	  {
-		  FoutTX -= TuningStepSize[step_index];
-		  calc_TX(FoutTX);
+				#ifndef HW8 // below NOT HW8
+				FoutTX -= TuningStepSize[step_index];
+				calc_TX(FoutTX);
+
+				#else // below for HW8 mode
+
+			HW8DialTX -= TuningStepSize[step_index]; // V2.1f uncommented this line
+			FoutTX = HW8DialtoFQ(HW8DialTX);
+			calc_TX(FoutTX);
+			#endif
+
 	  }  
 	  
 	 }
@@ -2563,7 +2783,10 @@ void Set_Freq(uint32_t frequency)
 // and clear LCD line 0 (top line)
 // Also puts cursor back to start of line
 	void clearLine1()
-	{
+	{  
+   // #ifndef I2C_LCD // if parallel mode
+  //if(!LCDmode) pins4LCD();
+ // #endif
 		lcd.setCursor(0,LCDBottomLine);
 		lcd.print("               "); // 15 blanks
 		lcd.setCursor(0,LCDBottomLine);
@@ -2596,11 +2819,28 @@ void Set_Freq(uint32_t frequency)
 // step value. So in 1 kHz step mode, I won't show 7,025,756, it will just
 // be 7,025,000
 
+/* REWORKED WITH V2.0i,2/13/2025.  WITH HW8, I HAD A LOT OF TROUBLE WITH
+   displaying the frequency. This routine expected that the lowest two
+   3-digit fields would always contain data. Trying to print a number like
+   50,000 dial counts could cause it to blow up. So now it will work all
+   the way down to 000,000,001, I think. (Although higher zeroes are
+   suppressed.)
+   */
+
 static void Print_freq(uint32_t f32, uint8_t line)
 
 	{
-		//DoubleBeep(); // ************ TEST
-		uint8_t length, i;
+/*
+    #ifdef HW8
+    Serial.print("f32 before and after: ");
+    Serial.print(f32);
+    Serial.print(", ");
+    f32 = HW8FQtoDial(f32);
+    Serial.println(f32);
+    #endif
+*/
+
+		uint8_t length, i, n; // V2.0i added n
 		uint8_t dest_point = 10; // end of dest field  *** WAS 9
     char T_R_CHAR = 'R';
 		
@@ -2609,6 +2849,7 @@ static void Print_freq(uint32_t f32, uint8_t line)
 
 // V1.19 skipt the R and/or T if in TX_ONLY mode NO - I'm going to put in an * to 
 // show I'm in TX_ONLy mode
+// V2.0i don't assume any field holds 3 digits of data.
 
  if(TX_ONLY) T_R_CHAR = '*';
   {
@@ -2626,6 +2867,14 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		ultoa (f32, a_freq, 10); // left justifies in 2nd arg field
 		                             // 3rd argument is RADIX
 
+/*
+#ifdef HW8
+Serial.print("a_freq: ");
+Serial.println(a_freq);
+#endif
+*/
+
+
 // I need to fill the destination field with space chars or I can have a
 // null in the first position if my frequency doesn't have a 10 MHz digit
 
@@ -2639,33 +2888,46 @@ static void Print_freq(uint32_t f32, uint8_t line)
 
 // Initially I'll copy the whole thing to a_freq_fmt with comma & decimal
 
-		length = (uint8_t) strlen(a_freq);
+		length = (uint8_t) strlen(a_freq); // length of string not including null at end.
 		--length; // make zero based
 
-		for (i=3; i!=0; i--)
+    n = 3;
+    if(length < 2) n = length + 1;
+		for (i=n; i!=0; i--)
 		{
-			a_freq_fmt[dest_point--] = a_freq[length--]; // move fract kHz
+			a_freq_fmt[dest_point--] = a_freq[length--]; // move fract kHz, ones, tens, hundreds
 		}
+  //if(length > 0) 
+  if(f32 >= 1000) a_freq_fmt[dest_point--] = '.'; // add a decimal point
+ // else goto completed;
+		else goto completed;
 
-		a_freq_fmt[dest_point--] = '.'; // add a decimal point
+    n = 3;
+    if(length < 2) n = length + 1;
 
-		
-		for (i=3; i!=0; i--)
+		for (i=n; i!=0; i--)
 		{
 			a_freq_fmt[dest_point--] = a_freq[length--];
 		}
-		
-		a_freq_fmt[dest_point--] = ','; // add the comma
+		if(f32 >= 1000000)  a_freq_fmt[dest_point--] = ','; // add the comma
+    else goto completed;
 
-		while (length !=0xFF)
+		while (length != 0xFF) 
 		{
 			
 			a_freq_fmt[dest_point--] = a_freq[length--];
 		}
-
+    completed:;
 		lcd.setCursor(1, line);// V1.4 changed 0 to 1
 		lcd.print(a_freq_fmt);
-	
+
+    /*
+    #ifdef HW8
+    Serial.print("a_freq_fmt: ");
+    Serial.println(a_freq_fmt);
+    #endif
+    */
+
 	// V1.3 I'm going to print LSB or USB along with the frequency
 	
 	printSBSelected();
@@ -2823,7 +3085,34 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		
 		while(!digitalRead(SW1) || !digitalRead(SW2)); // Stay until both open
 		
-		gohome:;
+		// Now with V2.1e, I want to count the number of short presses
+		// I only need to do PB3 now. So the same later for others if needed
+
+		if(!PB3Short) PB3CNT = 0; // any action other than PB3 short resets count
+
+		if(PB3Short)
+		{
+			if(millis() - PB3TIME < 2500)
+			{
+			PB3TIME = millis();
+				if(++PB3CNT == 3)
+				{
+					doCWPhone(); // If I do this action, make PB3Short false
+					PB3CNT = 0;
+					PB3Short = false;
+					rvalue = false; // Return with no button information
+					//PB3TIME = 0;
+				}
+			}
+		
+		else // Here, time was > 2.5 seconds
+			{
+				PB3CNT = 1; // too late for 3rd, but now is new 1st tap
+				PB3TIME = millis();
+			}
+		}
+
+		gohome:; // jumping here if not buttons pressed
 		return rvalue;
 		
 	}
@@ -2922,11 +3211,14 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		CLK1_hi = 0x5F; // assume USB V1.7
 		if(LSBMode) 
 		{
-			digitalWrite(SB_Relay, HIGH);
+			// digitalWrite(SB_Relay, HIGH); V2.0g no more SB_relay
 			CLK1_hi = 0x4F; // for LSB, V1.7
 			
 		}
-		else digitalWrite(SB_Relay, LOW);
+    // V2.1c: Mateusz report SB selection doesn't work. I see that below, I left in
+    // an 'else' statement resulting in skipping the call to clock_1_ON()
+
+		//else // digitalWrite(SB_Relay, LOW); V2.0g no more SB_relay V2.1c, see above comment
 
 		if(QUAD && !TX_ONLY) clock_1_ON(); // V1.7, call to change output inverted / not inverted
 		                       // V1.12, don't turn CLK1 ON if QUAD not true
@@ -2948,9 +3240,17 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		{
 			FoutRX = RITSave; // Restore previous offset
 			Go_RIT();
-			Print_freq(FoutRX, 0);
+       #ifndef HW8					   
+		   Print_freq(FoutRX, LCDTopLine);
+       #else
+		   Print_freq(HW8DialRX, LCDTopLine);
+       #endif
 		}
-		Print_freq(FoutTX, 1);
+       #ifndef HW8					   
+		   Print_freq(FoutTX, 1);
+       #else
+		   Print_freq(HW8DialTX, 1);
+       #endif
 	}
 
 // When RIT is turned OFF, the transmit frequency becomes the operating
@@ -2963,7 +3263,11 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		RITSave = FoutRX; // Keep and restore next time RIT turned on V1.4a
 		FoutRX = FoutTX;
 		Go_(FoutTX); // return to TX (TRX) frequency
-		Print_freq(FoutTX, 0);
+       #ifndef HW8					   
+		   Print_freq(FoutTX, LCDTopLine);
+       #else
+		   Print_freq(HW8DialTX, LCDTopLine);
+       #endif
 	}
 		
 // Swap TX and RX frequencies when in RIT mode
@@ -3000,8 +3304,10 @@ static void Print_freq(uint32_t f32, uint8_t line)
     {
     lcd.setCursor(0, LCDBottomLine );
 		lcd.print(" SPOT");
-    clock_0_ON();
-    if(QUAD) clock_1_ON();
+   // clock_0_ON();
+   // if(QUAD) clock_1_ON();
+	 		CLK0_1_on_quad(); // V2.1f this and next sort of bandaid to restore quadrature
+			reset_PLL_A();   // during SPOT function
     }
     else {
 
@@ -3024,6 +3330,10 @@ static void Print_freq(uint32_t f32, uint8_t line)
 
 	void ShowStepFast()
 	{
+ // #ifndef I2C_LCD // if parallel interface
+  //if(!LCDmode) pins4LCD(); // make pins outputs for LCD
+  
+  //#endif
 		//SingleBeep(); // beeped like crazy
 		lcd.setCursor(13, 0);
 		lcd.print("   "); // clear 13, 14, 15
@@ -3050,12 +3360,24 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		lcd.clear(); 
 		if(VFO_Rx_Tx == 0)
 		{
-			Print_freq(FoutTX, 0); // Here in sync mode
+       #ifndef HW8					   
+		   Print_freq(FoutTX, LCDTopLine);
+       #else
+		   Print_freq(HW8DialTX, LCDTopLine);
+       #endif// Here in sync mode
 		}
 		if(VFO_Rx_Tx == 1)
 		{
-			Print_freq(FoutRX, 0); // In RIT, RX freq to top line
-			Print_freq(FoutTX, 1); // In RIT, Fbase is TX freq - to bottom
+       #ifndef HW8					   
+		   Print_freq(FoutRX, LCDTopLine);
+       #else
+		   Print_freq(HW8DialRX, LCDTopLine);
+       #endif
+       #ifndef HW8					   
+		   Print_freq(FoutTX, 1);
+       #else
+		   Print_freq(HW8DialTX, 1);
+       #endif
 		}
 		printSBSelected();
 		ShowStepFast();
@@ -3065,13 +3387,19 @@ static void Print_freq(uint32_t f32, uint8_t line)
 
 // speaker beeps to go with PB closures ...
 
+// V2.0a 2/4/2025 if Keyer is Active, button press is for sending
+// a message, so I will silence the beeps at that time
+
 	void SingleBeep() // A beep of 40 WPM speed
 	{
+    if(!KeyerActive)
+    {
 		delay(20);
 		tone(spkrpin, CW_pitch_ST, 30); // V1.19
 		//delay(30);
 		//noTone(spkrpin);
 		delay(20);
+    }
 	}
 	
 	void DoubleBeep() // Two dits at 40 WPM speed (30 ms/dit)
@@ -3127,9 +3455,22 @@ static void Print_freq(uint32_t f32, uint8_t line)
 // Print "LSB" or "USB" depending on which is selected v1.3
 // As of v1.4b, the labels are CWL and CWB when in CW mode
 
+
+// V2.0 adds 'KYR' in this field, if in keyer mode
+
 	void printSBSelected()
 	{
+  //#ifndef I2C_LCD // V2.0g
+  //if(!LCDmode) pins4LCD(); // make pins outputs for LCD
+  
+  //#endif
+
+    if(!MorseToLCD)
+    {
 		lcd.setCursor(13,1); // bottom line, far right
+    printedKYR = false; // assumption
+    if(!KeyerActive)
+    {
 		if (LSBMode)
         {
 			if(modeCW) lcd.print("CWL"); // v1.4b
@@ -3140,7 +3481,130 @@ static void Print_freq(uint32_t f32, uint8_t line)
 			if(modeCW) lcd.print("CWU"); // v1.4b
             if(!modeCW) lcd.print("USB");
         }
+    }
+    else // V2.0f - else, if keyerActive
+    {lcd.print("KYR");
+    printedKYR = true;
 	}
+    }
+  }
+// V2.0 below actions taken from loop() in-line code so keyer can also call it
+/*
+  Actions include
+  sidetone ON/OFF
+  TX_Out key jack Low or High (Low is generally key down)
+  CLK0, 1, 2 turn ON or OFF. They may go different ways
+  Shift frequency of specific CLKs for pitch and RIT and mode
+
+	With V2.1f, if DoTransmit is false, no keying of output
+	signals CLK0,1,2 ON or OFF will happen. Just sidetone.
+
+*/
+
+
+
+  void KeyDownActions()
+  {
+    key_down = true;
+
+  //************* First, sidetone  **********
+
+
+		 if(sidetone) tone(spkrpin, CW_pitch_ST); // V1.3 create sidetone when key down V1.19 add _ST
+
+
+  // Actions below won't take place if in command mode
+	// also, if DoTransmit is false V2.1f
+
+    if(!CMNDMode && DoTransmit)
+    {
+			send_regs_TX(); // change output frequency if freqired
+
+    // turn ON clocks 0 and 1 if required by TX_ONLY
+    if(TX_ONLY)
+    {
+     //clock_0_ON(); // V1.19
+     //if(QUAD) clock_1_ON(); // V1.19
+		CLK0_1_on_quad(); // V2.1f this and next sort of bandaid to restore quadrature
+		reset_PLL_A();   // after sendTestText ends
+    }
+
+    // turn OFF clocks 0 and 1 if required by TX_CLK2 and CLK0_1_OFF
+    // Plus, turn ON CLK2 if required
+
+    	if(TX_CLK2 && CLK0_1_OFF_KYDN)
+			{
+			//si5351aOutputOff(SI_CLK0_CONTROL); // CLK0 off
+			//si5351aOutputOff(SI_CLK1_CONTROL); // CLK1 off
+			clock_0_OFF();
+			clock_1_OFF();
+			}
+			if(TX_CLK2) clock_2_ON();  // V1.12
+    // V2.0h below - testText inhibits transmit key closure
+			if(DoTransmit && OnAir && !testText) digitalWrite(TX_Out, keyDNstate); // echo keyed line AFTER registers updated   
+
+      } // CMNDMode false block ends here
+ 
+  } // KeyDownActions function ends here.
+ 
+
+			// V1.12 If using CLK2, turn off RX output to CLK0 and 1
+			// during key down if flag is true
+			
+
+
+  void KeyUpActions()
+  {
+    key_down = false; // V1.4
+
+			digitalWrite(TX_Out, keyUPstate); // raise keyed line BEFORE regs sent
+			noTone(spkrpin); // turn off sidetone
+
+      if(!CMNDMode && DoTransmit)
+      {
+			send_regs_RX(); // change output frequency 
+       //tone(spkrpin, 300);
+      //delay(100);
+       //noTone(spkrpin);			
+      if(TX_ONLY)
+      {
+      clock_0_OFF(); // V1.19
+      if(QUAD) clock_1_OFF(); // V1.19
+      }
+			if(TX_CLK2) clock_2_OFF(); //si5351aOutputOff(SI_CLK2_CONTROL); // V1.12 turn clock 2 off
+			
+			// V1.12 - NOW, if CLK2 is in use and CLK0 was turned off during key down
+			// turn it back on. Then, if CLK1 is not turned off by QUAD = false, then
+			// turn it back on too.
+			
+			if(TX_CLK2 && CLK0_1_OFF_KYDN)
+			{
+				/*
+				if(LSBMode) CLK1_hi = 0X4F; // V2.1f
+				else CLK1_hi = 0x5F; // V2.1f
+				if (QUAD) i2cWrite(CLK0_PHOFF, dividerRX); // V2.1f, trying to fix loss of quad
+				clock_0_ON();
+				if(QUAD) 
+				{clock_1_ON();
+				*/
+
+				CLK0_1_on_quad();
+				reset_PLL_A();
+				/* 
+				Serial.print("dividerRX: ");
+				Serial.println(dividerRX);
+				Serial.print("CLK0_PHOFF = ");
+				Serial.println(read_register(CLK0_PHOFF)); // V2.1f
+
+				Serial.print("SI_CLK0_CONTROL = ");
+				Serial.println(read_register(SI_CLK0_CONTROL), HEX);
+				Serial.print("SI_CLK1_CONTROL = ");
+				Serial.println(read_register(SI_CLK1_CONTROL), HEX);
+				*/
+				}
+			}
+    }
+ // }
 
 // The doPitch routine will display the pitch and vary it in 10 Hz steps
 // using the encoder. A maximum of 1000 Hz and minimum of 150 Hz is enforced
@@ -3149,8 +3613,12 @@ static void Print_freq(uint32_t f32, uint8_t line)
 // This should allow hearing the effect on pitch when using a receiver 
 // correctly tuned to a station. v1.4b
 
+// V2.0 will turn the speaker on during adjustment, if it wasn't already
+
 	void doPitch()
 	{
+
+
 		 // adapted from doSteps
         //delay(2000);
 		boolean chosen = false;
@@ -3170,8 +3638,10 @@ static void Print_freq(uint32_t f32, uint8_t line)
 			}
 		if (CW_pitch == 1010) CW_pitch = 1000; // v1.4b ceiling is 1000
 		if (CW_pitch == 140) CW_pitch = 150; // v1.4b floor is 150
+    CW_pitch_ST = CW_pitch; // V2.0 keep equal unless one is out of bounds
 		
 		if (r_dir) showPitch();
+    tone(spkrpin, CW_pitch); // V2.0
 		r_dir = 0;
 		
 		// Below, my intent is to update the Si570 with the new
@@ -3198,7 +3668,9 @@ static void Print_freq(uint32_t f32, uint8_t line)
 	
 	    }
 		}
-	}
+    noTone(spkrpin);
+	}                     // end of doPitch
+
 
 	void showSidetone()
 	{
@@ -3258,6 +3730,38 @@ static void Print_freq(uint32_t f32, uint8_t line)
 		}
 	}
 
+// V2.1e, for testing
+/*
+	void SPRINT_inhibits()
+	{
+		Serial.print("\nDoTransmit = ");
+		Serial.println(DoTransmit);
+		Serial.print("OnAir = ");
+		Serial.println(OnAir);
+		Serial.print("testText = ");
+		Serial.println(testText); // Note: = 0 when OK to key TX
+	}
+*/
+	
+
+
+// V2.0, making pins D4 and D5 share duty as LCD (outputs) and paddles (inputs)
+
+/*
+  void pins4LCD()
+  {
+    pinMode(DotContact, OUTPUT);
+    pinMode(DashContact, OUTPUT);
+    LCDmode = true;
+  }
+
+  void pins4paddle()
+  {
+    pinMode(DotContact, INPUT_PULLUP);
+    pinMode(DashContact, INPUT_PULLUP);
+    LCDmode = false;
+  }
+/*
 // 9/13/2020 change output levels. This is an experiment where I'll 
 // see the effect of the 4 possible states on the scope and log power
 // meter.  Not used in normal program execution.
