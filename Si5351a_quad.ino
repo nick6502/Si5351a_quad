@@ -8,6 +8,8 @@
 // V2.1e, will add quick method for Phone/CW switch, request from Mateusz,. start 4/2/2025
 // V2.1e also added bried display of keyer speed after changing
 // V2.1f Mateusz reported CLK2 keyed ON in "TU" opening message
+// V2.2 Issue major revision
+// V2.2a, fixed a couple RIT clear and RIT swap problems reported by VE3IDS 4/15/2025
 
 // I started this program in May, 2018
 
@@ -687,7 +689,7 @@ void setup()
 	lcd.setCursor(0,LCDBottomLine);
 	lcd.print(" Si5351a Quad"); // display version number on the LCD
 	lcd.setCursor(0,LCDTopLine);
-	lcd.print(" WA5BDU V2.2"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
+	lcd.print(" WA5BDU V2.2a"); // V1.2 9/4/2020 V1.5 1/11/2021 v1.6 3/18/2022
 	                           // V1.7 4/28/2022 V1.8 1/12/2023 V1.9 1/24/2023
                              // V1.10 4/16/2023
 							 // V1.11 8/4/2023
@@ -1210,6 +1212,9 @@ xloop(); // V2.0 loop from keyer
 						{
 						SingleBeep();
 						FoutRX = FoutTX; // eliminate offset
+						#ifdef HW8
+						HW8DialRX = HW8FQtoDial(FoutRX); // V2.2a
+						#endif
 						Go_RIT();
        #ifndef HW8					   
 		   Print_freq(FoutTX, LCDTopLine);
@@ -3278,6 +3283,10 @@ Serial.println(a_freq);
 		holder = FoutTX;
 		FoutTX = FoutRX;
 		FoutRX = holder; // Now they're swapped ...
+		#ifdef HW8 // V2.2a
+		HW8DialTX = HW8FQtoDial(FoutTX);
+		HW8DialRX = HW8FQtoDial(FoutRX);
+		#endif
 		Go_RIT(); // Send RX freq to the synthesizer
 		UpdateScreen(); // and fix screen
 	}
