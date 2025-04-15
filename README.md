@@ -2,6 +2,7 @@
 A VFO with quadrature outputs based on the Si5351a frequency synthesizer <p>
 This project contains source code for the synthesizer project. It is for the Arduinos based on the ATmega328 MCUs, such as the Nano or UNO. 
 Written by Nick Kennedy, WA5BDU</p>
+<p>V2.2a is a minor revisoin that corrects bugss affecting RIT Swap frequencies and RIT Clear functions, while in HW-8 mode</p>
 <p>V2.2 added 4/11/2025. My Keyer program has been merged with the program. It is a full-featured keyer well integrated into the program. <br>
 The other major addition is an "HW-8 Mode" compilation option where the program is customized for use with the HW-8 transceiver. <br>
 <br>NOTE: V1.19 adds another parameter to those saved in EEPROM. To insure that this location exists, one should execute SAVE STATE from the menu after loading V1.19. <p>
